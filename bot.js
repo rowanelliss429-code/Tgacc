@@ -6,6 +6,7 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const TelegramBot = require('node-telegram-bot-api');
+const crypto = require('crypto');
 
 // ---------- ENV ----------
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -50,6 +51,17 @@ const EMOTE = {
   INSTOCK_LABEL: '5323289282499064033',  // 📦 In stock:
   PAGE_LABEL: '5197219609970758159',     // 📝 Page x of y
   TAP_FLAG: '5231102735817918643',       // 👇 Tap a flag below to continue.
+
+  // ---- Pre-purchase confirmation card ----
+  BEFORE_BUY: '5864114012542736772',     // 🔥 BEFORE YOU BUY
+  NEW_FLAG: '6158968370726179617',       // 🏷 New flag
+  RESTRICTIONS: '5420323339723881652',   // ⚠️ restrictions
+  BUY_NEW_FLAG: '5296369303661067030',   // 🔒 Buy new flag
+  GET_FLAG_HAPPY: '6114069998089539705', // ✅ (reused for: "make happy" line, Accept & Buy button, success alert)
+  CHANGE_FLAG: '5352587852880302091',    // ✈️ U can change new flag
+  PRODUCT_DISCLAIMER: '6114141543654757519', // 📌 PRODUCT DISCLAIMER
+  READ_DISCLAIMER: '5769482310915199790',    // 📢 Read Disclaimer (button)
+  BACK: '6257789602497572109',           // ⬅️ Back (button)
 };
 
 // ---- Products / Countries data (placeholder - DB ချိတ်ပြီးမှ dynamic လုပ်နိုင်) ----
@@ -107,8 +119,7 @@ const phoneNumberSchema = new mongoose.Schema({
 const PhoneNumber = mongoose.model('PhoneNumber', phoneNumberSchema);
 
 // ---------- HELPERS ----------
-async function getOrCreateUser(msg) {
-  const from = msg.from;
+async function getOrCreateUser(from) {
   let user = await User.findOne({ telegramId: from.id });
   if (!user) {
     user = await User.create({
@@ -195,8 +206,12 @@ async function buildProductCard(serviceKey, country, requestedPage) {
 
   // Each available number becomes its own button; Back/Next row goes
   // underneath the number buttons (only shown when relevant).
+  // callback_data carries service/country/page so the purchase flow can
+  // return the user to exactly this page afterwards.
   const rows = numbers.length
-    ? numbers.map((n) => [{ text: `${country.flag}${n.number}`, callback_data: `num:${n._id}` }])
+    ? numbers.map((n) => [
+        { text: `${country.flag}${n.number}`, callback_data: `num:${n._id}:${serviceKey}:${country.code}:${page}` },
+      ])
     : [[{ text: 'လက်ရှိ Number မရှိသေးပါ', callback_data: 'noop' }]];
 
   const navRow = [];
@@ -205,6 +220,34 @@ async function buildProductCard(serviceKey, country, requestedPage) {
   if (navRow.length) rows.push(navRow);
 
   return { text, keyboard: { inline_keyboard: rows } };
+}
+
+// Pre-purchase confirmation card ("BEFORE YOU BUY")
+function buildPrePurchaseCard(phoneDoc, country, serviceKey, page) {
+  const text =
+    `<tg-emoji emoji-id="${EMOTE.BEFORE_BUY}">🔥</tg-emoji>BEFORE YOU BUY\n` +
+    `━━━━━━━━━━━━━━━━\n` +
+    `<tg-emoji emoji-id="${EMOTE.INSTOCK_LABEL}">📦</tg-emoji>Telegram ${country.name} flag\n` +
+    `<tg-emoji emoji-id="${EMOTE.NEW_FLAG}">🏷</tg-emoji>New flag\n` +
+    `${country.flag} ${country.dial}\n` +
+    `<tg-emoji emoji-id="${EMOTE.PRICE_LABEL}">🔖</tg-emoji>: ${fmtKs(phoneDoc.price)}\n` +
+    `━━━━━━━━━━━━━━━━\n` +
+    `<tg-emoji emoji-id="${EMOTE.RESTRICTIONS}">⚠️</tg-emoji> restrictions .\n` +
+    `<tg-emoji emoji-id="${EMOTE.BUY_NEW_FLAG}">🔒</tg-emoji> Buy new flag.\n` +
+    `<tg-emoji emoji-id="${EMOTE.GET_FLAG_HAPPY}">✅</tg-emoji> Once get new flag, make happy\n` +
+    `<tg-emoji emoji-id="${EMOTE.CHANGE_FLAG}">✈️</tg-emoji> U can change new flag.\n` +
+    `Tap "Accept & Buy" to continue.\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.PRODUCT_DISCLAIMER}">📌</tg-emoji> PRODUCT DISCLAIMER\n` +
+    `Open the linked Telegram channel post and read it before confirming.`;
+
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: '📢 Read Disclaimer', url: CHANNEL_LINK }],
+      [{ text: '✅ Accept & Buy', callback_data: `accept:${phoneDoc._id}:${serviceKey}:${country.code}:${page}` }],
+      [{ text: '⬅️ Back', callback_data: `back:${serviceKey}:${country.code}:${page}` }],
+    ],
+  };
+  return { text, keyboard };
 }
 
 // ---------- ADMIN COMMAND LIST ----------
@@ -254,7 +297,7 @@ bot.on('message', async (msg) => {
 // ==========================================================
 bot.onText(/^\/start$/, async (msg) => {
   const chatId = msg.chat.id;
-  const user = await getOrCreateUser(msg);
+  const user = await getOrCreateUser(msg.from);
 
   const welcomeText =
     `<tg-emoji emoji-id="${EMOTE.WELCOME}">🍬</tg-emoji><b>DigitalShopMm မှ ကြိုဆိုပါတယ်</b>\n` +
@@ -316,25 +359,102 @@ bot.on('callback_query', async (query) => {
         reply_markup: keyboard,
       });
     } else if (data.startsWith('num:')) {
-      // User tapped one specific phone-number button.
-      // NOTE: this is a stub for now — wires up to the actual purchase
-      // (deduct wallet balance, mark number as sold, deliver session /
-      // OTP) once you confirm how that step should work.
-      const id = data.split(':')[1];
+      // Step 3 -> Step 4: user tapped one specific phone-number button
+      // -> show the "BEFORE YOU BUY" confirmation card.
+      const [, id, serviceKey, countryCode, pageStr] = data.split(':');
       const phoneDoc = await PhoneNumber.findById(id);
+      const country = COUNTRIES.find((c) => c.code === countryCode);
       if (!phoneDoc || phoneDoc.status !== 'available') {
         await bot.answerCallbackQuery(query.id, {
           text: '❌ ဒီ Number ကို ရနိုင်တော့မည် မဟုတ်ပါ (ရောင်းပြီးသား ဖြစ်နိုင်ပါတယ်)။',
           show_alert: true,
         });
+        // list ကို refresh ပြန်ပြ (sold ဖြစ်သွားပြီဆိုရင် list ထဲက ပျောက်သွားအောင်)
+        const { text, keyboard } = await buildProductCard(serviceKey, country, Number(pageStr));
+        await bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', reply_markup: keyboard });
         return;
       }
-      const country = COUNTRIES.find((c) => c.code === phoneDoc.countryCode);
+      const { text, keyboard } = buildPrePurchaseCard(phoneDoc, country, serviceKey, Number(pageStr));
+      await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+    } else if (data.startsWith('back:')) {
+      // Back button on the "BEFORE YOU BUY" card -> return to the number list
+      const [, serviceKey, countryCode, pageStr] = data.split(':');
+      const country = COUNTRIES.find((c) => c.code === countryCode);
+      const { text, keyboard } = await buildProductCard(serviceKey, country, Number(pageStr));
+      await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      });
+    } else if (data.startsWith('accept:')) {
+      // Purchase confirmed -> deduct balance, mark number sold, record order
+      const [, id, serviceKey, countryCode, pageStr] = data.split(':');
+      const country = COUNTRIES.find((c) => c.code === countryCode);
+      const phoneDoc = await PhoneNumber.findById(id);
+
+      if (!phoneDoc || phoneDoc.status !== 'available') {
+        await bot.answerCallbackQuery(query.id, {
+          text: '❌ ဒီ Number ကို ရောင်းပြီးသား ဖြစ်နေပါပြီ။',
+          show_alert: true,
+        });
+        const { text, keyboard } = await buildProductCard(serviceKey, country, Number(pageStr));
+        await bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', reply_markup: keyboard });
+        return;
+      }
+
+      const user = await getOrCreateUser(query.from);
+      if (user.balance < phoneDoc.price) {
+        await bot.answerCallbackQuery(query.id, {
+          text: `❌ Balance မလုံလောက်ပါ။ လက်ရှိလက်ကျန်: ${fmtKs(user.balance)}, လိုအပ်သည်: ${fmtKs(phoneDoc.price)}`,
+          show_alert: true,
+        });
+        return;
+      }
+
+      // Deduct balance + mark sold (best-effort atomicity: guard on status
+      // still 'available' so two simultaneous buyers can't double-spend it)
+      const stillAvailable = await PhoneNumber.findOneAndUpdate(
+        { _id: phoneDoc._id, status: 'available' },
+        { status: 'sold' },
+        { new: true }
+      );
+      if (!stillAvailable) {
+        await bot.answerCallbackQuery(query.id, {
+          text: '❌ တစ်ဦးဦးက ရွေးသွားပြီးသား ဖြစ်နေပါတယ်။',
+          show_alert: true,
+        });
+        const { text, keyboard } = await buildProductCard(serviceKey, country, Number(pageStr));
+        await bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', reply_markup: keyboard });
+        return;
+      }
+
+      const orderId = crypto.randomBytes(4).toString('hex');
+      user.balance -= phoneDoc.price;
+      user.orders.push({
+        productName: `${country.flag}${country.dial} ${country.name} flag (${orderId})`,
+        amount: phoneDoc.price,
+        status: 'completed',
+      });
+      await user.save();
+
       await bot.answerCallbackQuery(query.id, {
-        text: `${country.flag}${phoneDoc.number} ရွေးလိုက်ပါပြီ — ${fmtKs(
-          phoneDoc.price
-        )}။ ဝယ်ယူခြင်း/OTP ပို့ခြင်း logic ကို ဆက်လက် ချိတ်ဆက်ပေးရန် လိုအပ်ပါသေးတယ်။`,
+        text: '🎉 Great, you got this flag!',
         show_alert: true,
+      });
+
+      // Purchase ပြီးရင် number list (updated stock/page) ကို ပြန်ပြ
+      const { text, keyboard } = await buildProductCard(serviceKey, country, Number(pageStr));
+      await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
       });
       return;
     } else if (data === 'noop') {
@@ -349,7 +469,7 @@ bot.on('callback_query', async (query) => {
 });
 
 bot.onText(/^📦 My Orders$/, async (msg) => {
-  const user = await getOrCreateUser(msg);
+  const user = await getOrCreateUser(msg.from);
   if (!user.orders.length) {
     return bot.sendMessage(
       msg.chat.id,
@@ -371,7 +491,7 @@ bot.onText(/^📦 My Orders$/, async (msg) => {
 });
 
 bot.onText(/^👤 Account$/, async (msg) => {
-  const user = await getOrCreateUser(msg);
+  const user = await getOrCreateUser(msg.from);
   await bot.sendMessage(
     msg.chat.id,
     `<tg-emoji emoji-id="${EMOTE.ACCOUNT}">👤</tg-emoji><b>Account</b>\n\n` +
@@ -385,7 +505,7 @@ bot.onText(/^👤 Account$/, async (msg) => {
 });
 
 bot.onText(/^👛 Balance$/, async (msg) => {
-  const user = await getOrCreateUser(msg);
+  const user = await getOrCreateUser(msg.from);
   await bot.sendMessage(
     msg.chat.id,
     `<tg-emoji emoji-id="${EMOTE.BALANCE}">👛</tg-emoji><b>Wallet Balance</b>\n\n` +
