@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: digitalshopmm-bot
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node bot.js
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: SUPPORT_USERNAME
+        sync: false
+      - key: CHANNEL_LINK
+        sync: false
