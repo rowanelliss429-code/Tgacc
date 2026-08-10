@@ -167,7 +167,7 @@ function countrySelectKeyboard(serviceKey) {
   };
 }
 
-// Product card + phone-number listing, paginated NUMBERS_PER_PAGE at a time.
+// Product card + phone-number BUTTONS, paginated NUMBERS_PER_PAGE at a time.
 // totalPages is fully dynamic — derived from however many numbers admin
 // has added for that service+country group (Math.ceil(total / 5)).
 async function buildProductCard(serviceKey, country, requestedPage) {
@@ -181,9 +181,6 @@ async function buildProductCard(serviceKey, country, requestedPage) {
     .limit(NUMBERS_PER_PAGE);
 
   const price = PRICES[country.code] || 0;
-  const numberLines = numbers.length
-    ? numbers.map((n) => `${country.flag}${n.number}`).join('\n')
-    : 'လက်ရှိ Number လက်ကျန် မရှိသေးပါ။';
 
   const text =
     `<tg-emoji emoji-id="${EMOTE.CHOOSE_FLAG}">➡️</tg-emoji>CHOOSE YOUR Flag\n` +
@@ -194,20 +191,20 @@ async function buildProductCard(serviceKey, country, requestedPage) {
     `<tg-emoji emoji-id="${EMOTE.INSTOCK_LABEL}">📦</tg-emoji><b>In stock:</b> ${total}\n` +
     `<tg-emoji emoji-id="${EMOTE.PAGE_LABEL}">📝</tg-emoji>Page ${page} of ${totalPages}\n` +
     `━━━━━━━━━━━━━━━━\n` +
-    `${numberLines}\n` +
-    `━━━━━━━━━━━━━━━━\n` +
-    `<tg-emoji emoji-id="${EMOTE.TAP_FLAG}">👇</tg-emoji><b>Tap a flag below to continue.</b>`;
+    `<tg-emoji emoji-id="${EMOTE.TAP_FLAG}">👇</tg-emoji><b>Choose a number below to continue.</b>`;
 
-  // Back / Next row (only the buttons that make sense are shown)
+  // Each available number becomes its own button; Back/Next row goes
+  // underneath the number buttons (only shown when relevant).
+  const rows = numbers.length
+    ? numbers.map((n) => [{ text: `${country.flag}${n.number}`, callback_data: `num:${n._id}` }])
+    : [[{ text: 'လက်ရှိ Number မရှိသေးပါ', callback_data: 'noop' }]];
+
   const navRow = [];
   if (page > 1) navRow.push({ text: '⬅️ Back', callback_data: `page:${serviceKey}:${country.code}:${page - 1}` });
   if (page < totalPages) navRow.push({ text: 'Next ➡️', callback_data: `page:${serviceKey}:${country.code}:${page + 1}` });
+  if (navRow.length) rows.push(navRow);
 
-  const keyboard = { inline_keyboard: [] };
-  if (navRow.length) keyboard.inline_keyboard.push(navRow);
-  keyboard.inline_keyboard.push(...countrySelectKeyboard(serviceKey).inline_keyboard);
-
-  return { text, keyboard };
+  return { text, keyboard: { inline_keyboard: rows } };
 }
 
 // ---------- ADMIN COMMAND LIST ----------
@@ -318,6 +315,31 @@ bot.on('callback_query', async (query) => {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
+    } else if (data.startsWith('num:')) {
+      // User tapped one specific phone-number button.
+      // NOTE: this is a stub for now — wires up to the actual purchase
+      // (deduct wallet balance, mark number as sold, deliver session /
+      // OTP) once you confirm how that step should work.
+      const id = data.split(':')[1];
+      const phoneDoc = await PhoneNumber.findById(id);
+      if (!phoneDoc || phoneDoc.status !== 'available') {
+        await bot.answerCallbackQuery(query.id, {
+          text: '❌ ဒီ Number ကို ရနိုင်တော့မည် မဟုတ်ပါ (ရောင်းပြီးသား ဖြစ်နိုင်ပါတယ်)။',
+          show_alert: true,
+        });
+        return;
+      }
+      const country = COUNTRIES.find((c) => c.code === phoneDoc.countryCode);
+      await bot.answerCallbackQuery(query.id, {
+        text: `${country.flag}${phoneDoc.number} ရွေးလိုက်ပါပြီ — ${fmtKs(
+          phoneDoc.price
+        )}။ ဝယ်ယူခြင်း/OTP ပို့ခြင်း logic ကို ဆက်လက် ချိတ်ဆက်ပေးရန် လိုအပ်ပါသေးတယ်။`,
+        show_alert: true,
+      });
+      return;
+    } else if (data === 'noop') {
+      await bot.answerCallbackQuery(query.id);
+      return;
     }
     await bot.answerCallbackQuery(query.id);
   } catch (err) {
