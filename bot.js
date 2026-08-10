@@ -36,7 +36,33 @@ const EMOTE = {
   JOIN_CHANNEL: '6113870986484913105',  // 👋
   LANGUAGE: '5879585266426973039',      // 🌐
   REDEEM_CODE: '5359664288241829619',   // 🎁
+
+  // ---- Products flow ----
+  SELECT_PRODUCT: '4900189275326252171', // 🖤 Select a product:
+  SVC_TELEGRAM: '6257974552379270658',   // 📱 Telegram
+  SVC_TELEGRAMM: '5472239203590888751',  // 📩 Telegramm
+  FLAG_MM: '6260246207826759565',        // 🇲🇲 +95
+  FLAG_CO: '5294111658396895748',        // 🇨🇴 +57
+  FLAG_US: '5987769694407368809',        // 🇺🇸 +1
+  CHOOSE_FLAG: '6159042351537853617',    // ➡️ CHOOSE YOUR Flag
+  TYPE_LABEL: '5298877105000439431',     // 🏷 Type:
+  PRICE_LABEL: '6039495948353146588',    // 🔖 Price:
+  INSTOCK_LABEL: '5323289282499064033',  // 📦 In stock:
+  PAGE_LABEL: '5197219609970758159',     // 📝 Page x of y
+  TAP_FLAG: '5231102735817918643',       // 👇 Tap a flag below to continue.
 };
+
+// ---- Products / Countries data (placeholder - DB ချိတ်ပြီးမှ dynamic လုပ်နိုင်) ----
+const SERVICES = {
+  telegram: { label: '📱 Telegram', emoteId: EMOTE.SVC_TELEGRAM },
+  telegramm: { label: '📩 Telegramm', emoteId: EMOTE.SVC_TELEGRAMM },
+};
+
+const COUNTRIES = [
+  { code: 'mm', flag: '🇲🇲', dial: '+95', name: 'Myanmar', emoteId: EMOTE.FLAG_MM },
+  { code: 'co', flag: '🇨🇴', dial: '+57', name: 'Colombia', emoteId: EMOTE.FLAG_CO },
+  { code: 'us', flag: '🇺🇸', dial: '+1', name: 'UnitedState', emoteId: EMOTE.FLAG_US },
+];
 
 // ---------- DB CONNECT ----------
 mongoose
@@ -96,6 +122,46 @@ function mainMenuKeyboard() {
       is_persistent: true,
     },
   };
+}
+
+// ---------- PRODUCTS FLOW KEYBOARDS ----------
+// Note: inline button label ထဲမှာလည်း custom/premium emoji entity
+// ထည့်လို့မရတာ Bot API limitation အတူတူပါပဲ (Reply keyboard အတွက်
+// ရှင်းထားသလိုပါပဲ) — ဒါကြောင့် button label တွေမှာ ပုံမှန် unicode
+// flag/emoji ပဲ သုံးထားပြီး၊ edit လုပ်တဲ့ message text ထဲမှာတော့
+// premium emoji ID တွေကို tg-emoji entity နဲ့ ပြထားပါတယ်။
+function serviceSelectKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: SERVICES.telegram.label, callback_data: 'svc:telegram' }],
+      [{ text: SERVICES.telegramm.label, callback_data: 'svc:telegramm' }],
+    ],
+  };
+}
+
+function countrySelectKeyboard(serviceKey) {
+  return {
+    inline_keyboard: COUNTRIES.map((c) => [
+      {
+        text: `${c.flag}${c.dial} ${c.name}`,
+        callback_data: `country:${serviceKey}:${c.code}`,
+      },
+    ]),
+  };
+}
+
+function productCardText(country) {
+  return (
+    `<tg-emoji emoji-id="${EMOTE.CHOOSE_FLAG}">➡️</tg-emoji>CHOOSE YOUR Flag\n` +
+    `━━━━━━━━━━━━━━━━\n` +
+    `<tg-emoji emoji-id="${EMOTE.TYPE_LABEL}">🏷</tg-emoji><b>Type:</b> ${country.flag}\n` +
+    `🛍️<b>Product:</b> test\n` +
+    `<tg-emoji emoji-id="${EMOTE.PRICE_LABEL}">🔖</tg-emoji><b>Price:</b> test\n` +
+    `<tg-emoji emoji-id="${EMOTE.INSTOCK_LABEL}">📦</tg-emoji><b>In stock:</b> test\n` +
+    `<tg-emoji emoji-id="${EMOTE.PAGE_LABEL}">📝</tg-emoji>Page 1 of 3\n` +
+    `━━━━━━━━━━━━━━━━\n` +
+    `<tg-emoji emoji-id="${EMOTE.TAP_FLAG}">👇</tg-emoji><b>Tap a flag below to continue.</b>`
+  );
 }
 
 // ---------- ADMIN COMMAND LIST ----------
@@ -159,9 +225,42 @@ bot.onText(/^\/start$/, async (msg) => {
 bot.onText(/^▪️ Products$/, async (msg) => {
   await bot.sendMessage(
     msg.chat.id,
-    `<tg-emoji emoji-id="${EMOTE.PRODUCTS}">▪️</tg-emoji><b>Products</b>\n\nလက်ရှိ ရောင်းချနေသော Digital Products များကို ဒီနေရာမှာ စာရင်းပြပေးမှာဖြစ်ပါတယ်။ (Product list ကို database ထဲက dynamic ဆွဲပြရန် ထပ်ဆောင်း logic လိုအပ်ပါသေးတယ်)`,
-    { parse_mode: 'HTML' }
+    `<tg-emoji emoji-id="${EMOTE.SELECT_PRODUCT}">🖤</tg-emoji><b>Select a product:</b>`,
+    { parse_mode: 'HTML', reply_markup: serviceSelectKeyboard() }
   );
+});
+
+// ---------- CALLBACK QUERY (inline button taps inside Products flow) ----------
+bot.on('callback_query', async (query) => {
+  const data = query.data || '';
+  const chatId = query.message.chat.id;
+  const messageId = query.message.message_id;
+
+  try {
+    if (data.startsWith('svc:')) {
+      // Step 1 -> Step 2: service ရွေးပြီးရင် country/flag buttons အဖြစ်ပြောင်း
+      const serviceKey = data.split(':')[1];
+      await bot.editMessageReplyMarkup(countrySelectKeyboard(serviceKey), {
+        chat_id: chatId,
+        message_id: messageId,
+      });
+    } else if (data.startsWith('country:')) {
+      // Step 2 -> Step 3: country ရွေးပြီးရင် product card ပြပြီး flag
+      // button တွေကိုပဲ ပြန်ထားမယ် (ဆက်ရွေးလို့ရအောင်)
+      const [, serviceKey, countryCode] = data.split(':');
+      const country = COUNTRIES.find((c) => c.code === countryCode);
+      await bot.editMessageText(productCardText(country), {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: countrySelectKeyboard(serviceKey),
+      });
+    }
+    await bot.answerCallbackQuery(query.id);
+  } catch (err) {
+    console.error('callback_query error:', err.message);
+    bot.answerCallbackQuery(query.id).catch(() => {});
+  }
 });
 
 bot.onText(/^📦 My Orders$/, async (msg) => {
