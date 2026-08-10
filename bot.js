@@ -64,6 +64,11 @@ const COUNTRIES = [
   { code: 'us', flag: '🇺🇸', dial: '+1', name: 'UnitedState', emoteId: EMOTE.FLAG_US },
 ];
 
+// Price per country group (Ks). +1 UnitedState price မသိရသေးလို့ placeholder ထားထားပါတယ်
+// - လိုအပ်ရင် ဒီနေရာကနေ ပြင်ပါ။
+const PRICES = { mm: 2000, co: 1500, us: 2500 };
+const NUMBERS_PER_PAGE = 5;
+
 // ---------- DB CONNECT ----------
 mongoose
   .connect(MONGO_URI)
@@ -88,6 +93,18 @@ const userSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 const User = mongoose.model('User', userSchema);
+
+// ---- Phone Number (account inventory) schema ----
+const phoneNumberSchema = new mongoose.Schema({
+  number: { type: String, required: true }, // e.g. +95xxxxxxxxx
+  service: { type: String, required: true }, // telegram | telegramm
+  countryCode: { type: String, required: true }, // mm | co | us
+  price: { type: Number, required: true },
+  sessionText: { type: String, required: true },
+  status: { type: String, default: 'available' }, // available | sold
+  createdAt: { type: Date, default: Date.now },
+});
+const PhoneNumber = mongoose.model('PhoneNumber', phoneNumberSchema);
 
 // ---------- HELPERS ----------
 async function getOrCreateUser(msg) {
@@ -150,18 +167,47 @@ function countrySelectKeyboard(serviceKey) {
   };
 }
 
-function productCardText(country) {
-  return (
+// Product card + phone-number listing, paginated NUMBERS_PER_PAGE at a time.
+// totalPages is fully dynamic — derived from however many numbers admin
+// has added for that service+country group (Math.ceil(total / 5)).
+async function buildProductCard(serviceKey, country, requestedPage) {
+  const filter = { service: serviceKey, countryCode: country.code, status: 'available' };
+  const total = await PhoneNumber.countDocuments(filter);
+  const totalPages = Math.max(1, Math.ceil(total / NUMBERS_PER_PAGE));
+  const page = Math.min(Math.max(1, requestedPage || 1), totalPages);
+  const numbers = await PhoneNumber.find(filter)
+    .sort({ createdAt: 1 })
+    .skip((page - 1) * NUMBERS_PER_PAGE)
+    .limit(NUMBERS_PER_PAGE);
+
+  const price = PRICES[country.code] || 0;
+  const numberLines = numbers.length
+    ? numbers.map((n) => `${country.flag}${n.number}`).join('\n')
+    : 'လက်ရှိ Number လက်ကျန် မရှိသေးပါ။';
+
+  const text =
     `<tg-emoji emoji-id="${EMOTE.CHOOSE_FLAG}">➡️</tg-emoji>CHOOSE YOUR Flag\n` +
     `━━━━━━━━━━━━━━━━\n` +
     `<tg-emoji emoji-id="${EMOTE.TYPE_LABEL}">🏷</tg-emoji><b>Type:</b> ${country.flag}\n` +
-    `🛍️<b>Product:</b> test\n` +
-    `<tg-emoji emoji-id="${EMOTE.PRICE_LABEL}">🔖</tg-emoji><b>Price:</b> test\n` +
-    `<tg-emoji emoji-id="${EMOTE.INSTOCK_LABEL}">📦</tg-emoji><b>In stock:</b> test\n` +
-    `<tg-emoji emoji-id="${EMOTE.PAGE_LABEL}">📝</tg-emoji>Page 1 of 3\n` +
+    `🛍️<b>Product:</b> ${country.flag}${country.dial} ${country.name} Account\n` +
+    `<tg-emoji emoji-id="${EMOTE.PRICE_LABEL}">🔖</tg-emoji><b>Price:</b> ${fmtKs(price)}\n` +
+    `<tg-emoji emoji-id="${EMOTE.INSTOCK_LABEL}">📦</tg-emoji><b>In stock:</b> ${total}\n` +
+    `<tg-emoji emoji-id="${EMOTE.PAGE_LABEL}">📝</tg-emoji>Page ${page} of ${totalPages}\n` +
     `━━━━━━━━━━━━━━━━\n` +
-    `<tg-emoji emoji-id="${EMOTE.TAP_FLAG}">👇</tg-emoji><b>Tap a flag below to continue.</b>`
-  );
+    `${numberLines}\n` +
+    `━━━━━━━━━━━━━━━━\n` +
+    `<tg-emoji emoji-id="${EMOTE.TAP_FLAG}">👇</tg-emoji><b>Tap a flag below to continue.</b>`;
+
+  // Back / Next row (only the buttons that make sense are shown)
+  const navRow = [];
+  if (page > 1) navRow.push({ text: '⬅️ Back', callback_data: `page:${serviceKey}:${country.code}:${page - 1}` });
+  if (page < totalPages) navRow.push({ text: 'Next ➡️', callback_data: `page:${serviceKey}:${country.code}:${page + 1}` });
+
+  const keyboard = { inline_keyboard: [] };
+  if (navRow.length) keyboard.inline_keyboard.push(navRow);
+  keyboard.inline_keyboard.push(...countrySelectKeyboard(serviceKey).inline_keyboard);
+
+  return { text, keyboard };
 }
 
 // ---------- ADMIN COMMAND LIST ----------
@@ -175,6 +221,8 @@ const ADMIN_COMMANDS = [
   '/broadcast',
   '/users',
   '/admin',
+  '/addnumber',
+  '/cancel',
 ];
 
 function isAdminCommand(text) {
@@ -188,6 +236,10 @@ function isAdminCommand(text) {
 // ==========================================================
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 bot.on('polling_error', (err) => console.error('Polling error:', err.message));
+
+// In-memory conversation state for the admin's multi-step /addnumber flow.
+// (Single admin, so a simple Map keyed by admin id is enough.)
+const adminState = new Map();
 
 // ---------- GLOBAL ADMIN GATE ----------
 // This runs for every message. If the text matches an admin-only
@@ -245,15 +297,26 @@ bot.on('callback_query', async (query) => {
         message_id: messageId,
       });
     } else if (data.startsWith('country:')) {
-      // Step 2 -> Step 3: country ရွေးပြီးရင် product card ပြပြီး flag
-      // button တွေကိုပဲ ပြန်ထားမယ် (ဆက်ရွေးလို့ရအောင်)
+      // Step 2 -> Step 3: country ရွေးပြီးရင် product card + number list (page 1) ပြ
       const [, serviceKey, countryCode] = data.split(':');
       const country = COUNTRIES.find((c) => c.code === countryCode);
-      await bot.editMessageText(productCardText(country), {
+      const { text, keyboard } = await buildProductCard(serviceKey, country, 1);
+      await bot.editMessageText(text, {
         chat_id: chatId,
         message_id: messageId,
         parse_mode: 'HTML',
-        reply_markup: countrySelectKeyboard(serviceKey),
+        reply_markup: keyboard,
+      });
+    } else if (data.startsWith('page:')) {
+      // Next / Back pagination inside a country's number list
+      const [, serviceKey, countryCode, pageStr] = data.split(':');
+      const country = COUNTRIES.find((c) => c.code === countryCode);
+      const { text, keyboard } = await buildProductCard(serviceKey, country, Number(pageStr));
+      await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
       });
     }
     await bot.answerCallbackQuery(query.id);
@@ -442,10 +505,108 @@ bot.onText(/^\/admin$/, async (msg) => {
       `/addbalance <id> <amount>\n` +
       `/removebalance <id> <amount>\n` +
       `/setbalance <id> <amount>\n` +
+      `/addnumber\n` +
       `/stats\n` +
       `/users\n` +
-      `/broadcast <message>`
+      `/broadcast <message>\n` +
+      `/cancel — running flow ကို ရပ်တန့်ရန်`
   );
+});
+
+// /cancel - abort whatever multi-step flow admin is currently in
+bot.onText(/^\/cancel$/, async (msg) => {
+  if (msg.from.id !== ADMIN_ID) return;
+  if (adminState.has(ADMIN_ID)) {
+    adminState.delete(ADMIN_ID);
+    await bot.sendMessage(msg.chat.id, '❌ လက်ရှိ လုပ်ဆောင်နေမှုကို ရပ်လိုက်ပါပြီ။');
+  } else {
+    await bot.sendMessage(msg.chat.id, 'ရပ်စရာ လုပ်ဆောင်ချက် မရှိပါ။');
+  }
+});
+
+// ==========================================================
+//  /addnumber  (admin multi-step flow)
+//  Step 1: ask for phone number  -> detect country + price
+//  Step 2: ask for session (txt file OR plain text)
+//          -> save PhoneNumber doc, auto-slot into its country group
+// ==========================================================
+bot.onText(/^\/addnumber$/, async (msg) => {
+  if (msg.from.id !== ADMIN_ID) return;
+  adminState.set(ADMIN_ID, { step: 'awaiting_phone' });
+  await bot.sendMessage(
+    msg.chat.id,
+    '📞 ထည့်မည့် Phone Number ကို ပို့ပါ (ဥပမာ - +95xxxxxxxxx)\n\nရပ်ချင်ရင် /cancel ရိုက်ပါ။'
+  );
+});
+
+// Generic listener that drives the /addnumber conversation. Only ever
+// acts on messages from ADMIN_ID while a flow is in progress, and only
+// on messages that are NOT one of the admin slash-commands themselves
+// (so /cancel etc. keep working normally via their own handlers).
+bot.on('message', async (msg) => {
+  if (msg.from.id !== ADMIN_ID) return;
+  const state = adminState.get(ADMIN_ID);
+  if (!state) return;
+  if (msg.text && msg.text.startsWith('/')) return; // let slash commands run their own handler
+
+  if (state.step === 'awaiting_phone') {
+    const phone = (msg.text || '').trim();
+    const country = COUNTRIES.find((c) => phone.startsWith(c.dial));
+    if (!country) {
+      return bot.sendMessage(
+        msg.chat.id,
+        `❌ ဒီ Phone Number ရဲ့ နိုင်ငံကုဒ်ကို မသိပါ (${COUNTRIES.map((c) => c.dial).join(', ')} တွေပဲ လက်ရှိထောက်ပံ့ထားပါတယ်)။ ပြန်ပို့ပါ။`
+      );
+    }
+    adminState.set(ADMIN_ID, {
+      step: 'awaiting_session',
+      phone,
+      countryCode: country.code,
+      price: PRICES[country.code] || 0,
+    });
+    return bot.sendMessage(
+      msg.chat.id,
+      `✅ ${country.flag}${phone} ကို ${country.flag}${country.dial} ${country.name} Account (${fmtKs(
+        PRICES[country.code] || 0
+      )}) အုပ်စုထဲ ထည့်ပါမယ်။\n\n📄 ယခု Session ကို ပို့ပါ — .txt file အနေနဲ့ upload လုပ်လည်းရ / စာသားအနေနဲ့ တိုက်ရိုက်ရိုက်ပို့လည်း ရပါတယ်။`
+    );
+  }
+
+  if (state.step === 'awaiting_session') {
+    let sessionText = null;
+
+    if (msg.document) {
+      try {
+        const fileLink = await bot.getFileLink(msg.document.file_id);
+        const res = await fetch(fileLink);
+        sessionText = await res.text();
+      } catch (err) {
+        console.error('session file download error:', err.message);
+        return bot.sendMessage(msg.chat.id, '❌ File download မအောင်မြင်ပါ။ ပြန်ကြိုးစားပါ။');
+      }
+    } else if (msg.text) {
+      sessionText = msg.text.trim();
+    }
+
+    if (!sessionText) {
+      return bot.sendMessage(msg.chat.id, '❌ Session file (.txt) သို့မဟုတ် စာသားအနေနဲ့ ပို့ပါ။');
+    }
+
+    await PhoneNumber.create({
+      number: state.phone,
+      service: 'telegram', // default group; admin service ရွေးချယ်ခွင့် ထပ်လိုအပ်ရင် flow ထဲ ထပ်ထည့်နိုင်ပါတယ်
+      countryCode: state.countryCode,
+      price: state.price,
+      sessionText,
+    });
+
+    const country = COUNTRIES.find((c) => c.code === state.countryCode);
+    adminState.delete(ADMIN_ID);
+    return bot.sendMessage(
+      msg.chat.id,
+      `✅ ${country.flag}${state.phone} ကို session နဲ့အတူ ${country.flag}${country.dial} ${country.name} Account အုပ်စုထဲ ထည့်ပြီးပါပြီ။`
+    );
+  }
 });
 
 // ==========================================================
