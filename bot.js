@@ -71,9 +71,9 @@ const SERVICES = {
 };
 
 const COUNTRIES = [
-  { code: 'mm', flag: '🇲🇲', dial: '+95', name: 'Myanmar', emoteId: EMOTE.FLAG_MM, labelSuffix: ' Account' },
-  { code: 'co', flag: '🇨🇴', dial: '+57', name: 'Colombia', emoteId: EMOTE.FLAG_CO, labelSuffix: '' },
-  { code: 'us', flag: '🇺🇸', dial: '+1', name: 'UnitedState', emoteId: EMOTE.FLAG_US, labelSuffix: '' },
+  { code: 'mm', flag: '🇲🇲', dial: '+95', name: 'Myanmar', emoteId: EMOTE.FLAG_MM, labelSuffix: ' Account    .' },
+  { code: 'co', flag: '🇨🇴', dial: '+57', name: 'Colombia', emoteId: EMOTE.FLAG_CO, labelSuffix: ' Account    .' },
+  { code: 'us', flag: '🇺🇸', dial: '+1', name: 'UnitedState', emoteId: EMOTE.FLAG_US, labelSuffix: ' Account  .' },
 ];
 
 // Price per country group (Ks) — button label ထဲမှာလည်း ဒီနေရာကနေ ရွေးပြသွားမှာပါ
@@ -170,7 +170,7 @@ function countrySelectKeyboard(serviceKey) {
   return {
     inline_keyboard: COUNTRIES.map((c) => [
       {
-        text: `${c.flag}${c.dial} ${c.name}${c.labelSuffix} . ${PRICES[c.code]}ks`,
+        text: `${c.flag}${c.dial} ${c.name}${c.labelSuffix} ${PRICES[c.code]}ks`,
         callback_data: `country:${serviceKey}:${c.code}`,
       },
     ]),
@@ -193,15 +193,15 @@ async function buildProductCard(serviceKey, country, requestedPage) {
   const price = PRICES[country.code] || 0;
 
   const text =
-    `<tg-emoji emoji-id="${EMOTE.CHOOSE_FLAG}">➡️</tg-emoji>CHOOSE YOUR Flag\n` +
+    `<tg-emoji emoji-id="${EMOTE.CHOOSE_FLAG}">➡️</tg-emoji>CHOOSE YOUR TELEGRAM ACCOUNT\n` +
     `━━━━━━━━━━━━━━━━\n` +
-    `<tg-emoji emoji-id="${EMOTE.TYPE_LABEL}">🏷</tg-emoji><b>Type:</b> ${country.flag}\n` +
-    `🛍️<b>Product:</b> ${country.flag}${country.dial} ${country.name} Account\n` +
-    `<tg-emoji emoji-id="${EMOTE.PRICE_LABEL}">🔖</tg-emoji><b>Price:</b> ${fmtKs(price)}\n` +
-    `<tg-emoji emoji-id="${EMOTE.INSTOCK_LABEL}">📦</tg-emoji><b>In stock:</b> ${total}\n` +
+    `<tg-emoji emoji-id="${EMOTE.TYPE_LABEL}">🏷</tg-emoji><b>Type:</b> ${country.flag}\n\n` +
+    `🛍️<b>Product:</b> Telegram Account\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.PRICE_LABEL}">🔖</tg-emoji><b>Price:</b> ${fmtKs(price)}\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.INSTOCK_LABEL}">📦</tg-emoji><b>In stock:</b> ${total} accounts\n\n` +
     `<tg-emoji emoji-id="${EMOTE.PAGE_LABEL}">📝</tg-emoji>Page ${page} of ${totalPages}\n` +
     `━━━━━━━━━━━━━━━━\n` +
-    `<tg-emoji emoji-id="${EMOTE.TAP_FLAG}">👇</tg-emoji><b>Choose a number below to continue.</b>`;
+    `<tg-emoji emoji-id="${EMOTE.TAP_FLAG}">👇</tg-emoji><b>Tap a phone number below to continue.</b>`;
 
   // Each available number becomes its own button; Back/Next row goes
   // underneath the number buttons (only shown when relevant).
