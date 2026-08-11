@@ -71,14 +71,13 @@ const SERVICES = {
 };
 
 const COUNTRIES = [
-  { code: 'mm', flag: '🇲🇲', dial: '+95', name: 'Myanmar', emoteId: EMOTE.FLAG_MM },
-  { code: 'co', flag: '🇨🇴', dial: '+57', name: 'Colombia', emoteId: EMOTE.FLAG_CO },
-  { code: 'us', flag: '🇺🇸', dial: '+1', name: 'UnitedState', emoteId: EMOTE.FLAG_US },
+  { code: 'mm', flag: '🇲🇲', dial: '+95', name: 'Myanmar', emoteId: EMOTE.FLAG_MM, labelSuffix: ' Account' },
+  { code: 'co', flag: '🇨🇴', dial: '+57', name: 'Colombia', emoteId: EMOTE.FLAG_CO, labelSuffix: '' },
+  { code: 'us', flag: '🇺🇸', dial: '+1', name: 'UnitedState', emoteId: EMOTE.FLAG_US, labelSuffix: '' },
 ];
 
-// Price per country group (Ks). +1 UnitedState price မသိရသေးလို့ placeholder ထားထားပါတယ်
-// - လိုအပ်ရင် ဒီနေရာကနေ ပြင်ပါ။
-const PRICES = { mm: 2000, co: 1500, us: 2500 };
+// Price per country group (Ks) — button label ထဲမှာလည်း ဒီနေရာကနေ ရွေးပြသွားမှာပါ
+const PRICES = { mm: 2000, co: 1700, us: 1500 };
 const NUMBERS_PER_PAGE = 5;
 
 // ---------- DB CONNECT ----------
@@ -171,7 +170,7 @@ function countrySelectKeyboard(serviceKey) {
   return {
     inline_keyboard: COUNTRIES.map((c) => [
       {
-        text: `${c.flag}${c.dial} ${c.name}`,
+        text: `${c.flag}${c.dial} ${c.name}${c.labelSuffix} . ${PRICES[c.code]}ks`,
         callback_data: `country:${serviceKey}:${c.code}`,
       },
     ]),
@@ -300,9 +299,8 @@ bot.onText(/^\/start$/, async (msg) => {
   const user = await getOrCreateUser(msg.from);
 
   const welcomeText =
-    `<tg-emoji emoji-id="${EMOTE.WELCOME}">🍬</tg-emoji><b>DigitalShopMm မှ ကြိုဆိုပါတယ်</b>\n` +
+    `<tg-emoji emoji-id="${EMOTE.WELCOME}">🍬</tg-emoji><b>DigitalShopMm မှ ကြိုဆိုပါတယ်</b>\n\n` +
     `🛍Digital Products နှင့် Services များကို ငွေဖြည့်သွင်းပြီး လိုချင်သည့် ပစ္စည်းကို တိုက်ရိုက် လျှင်မြန်စွာဝယ်ယူနိုင်ပါသည်🛍\n\n` +
-    `Support » @${SUPPORT_USERNAME}\n\n` +
     `<tg-emoji emoji-id="${EMOTE.WALLET}">💳</tg-emoji>Wallet Balance: ${fmtKs(user.balance)}`;
 
   await bot.sendMessage(chatId, welcomeText, {
