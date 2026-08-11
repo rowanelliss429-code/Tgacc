@@ -77,8 +77,8 @@ const EMOTE = {
 
 // ---- Products / Countries data (placeholder - DB ချိတ်ပြီးမှ dynamic လုပ်နိုင်) ----
 const SERVICES = {
-  telegram: { label: '📱 Telegram', emoteId: EMOTE.SVC_TELEGRAM },
-  telegramm: { label: '📩 Telegramm', emoteId: EMOTE.SVC_TELEGRAMM },
+  telegram: { label: '📱Buy Telegram Accounts', emoteId: EMOTE.SVC_TELEGRAM },
+  telegramm: { label: '📩Buy Telegram Comments', emoteId: EMOTE.SVC_TELEGRAMM },
 };
 
 const COUNTRIES = [
