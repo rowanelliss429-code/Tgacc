@@ -228,17 +228,13 @@ async function buildProductCard(serviceKey, country, requestedPage) {
 function buildPrePurchaseCard(phoneDoc, country, serviceKey, page) {
   const text =
     `<tg-emoji emoji-id="${EMOTE.BEFORE_BUY}">🔥</tg-emoji>BEFORE YOU BUY\n` +
-    `━━━━━━━━━━━━━━━━\n` +
-    `<tg-emoji emoji-id="${EMOTE.INSTOCK_LABEL}">📦</tg-emoji>Telegram ${country.name} flag\n` +
-    `<tg-emoji emoji-id="${EMOTE.NEW_FLAG}">🏷</tg-emoji>New flag\n` +
-    `${country.flag} ${country.dial}\n` +
-    `<tg-emoji emoji-id="${EMOTE.PRICE_LABEL}">🔖</tg-emoji>: ${fmtKs(phoneDoc.price)}\n` +
-    `━━━━━━━━━━━━━━━━\n` +
-    `<tg-emoji emoji-id="${EMOTE.RESTRICTIONS}">⚠️</tg-emoji> restrictions .\n` +
-    `<tg-emoji emoji-id="${EMOTE.BUY_NEW_FLAG}">🔒</tg-emoji> Buy new flag.\n` +
-    `<tg-emoji emoji-id="${EMOTE.GET_FLAG_HAPPY}">✅</tg-emoji> Once get new flag, make happy\n` +
-    `<tg-emoji emoji-id="${EMOTE.CHANGE_FLAG}">✈️</tg-emoji> U can change new flag.\n` +
-    `Tap "Accept & Buy" to continue.\n\n` +
+    `━━━━━━━━━━━━━━━━\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.INSTOCK_LABEL}">📦</tg-emoji> Telegram ${country.name} Account\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.NEW_FLAG}">🏷</tg-emoji> New account\n\n` +
+    `${country.flag} ${phoneDoc.number}\n` +
+    `<tg-emoji emoji-id="${EMOTE.PRICE_LABEL}">🔖</tg-emoji> :${fmtKs(phoneDoc.price)}\n` +
+    `━━━━━━━━━━━━━━━━\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.RESTRICTIONS}">⚠️</tg-emoji> Telegram restrictions are outside our control.\n\n` +
     `<tg-emoji emoji-id="${EMOTE.PRODUCT_DISCLAIMER}">📌</tg-emoji> PRODUCT DISCLAIMER\n` +
     `Open the linked Telegram channel post and read it before confirming.`;
 
