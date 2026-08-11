@@ -62,6 +62,17 @@ const EMOTE = {
   PRODUCT_DISCLAIMER: '6114141543654757519', // 📌 PRODUCT DISCLAIMER
   READ_DISCLAIMER: '5769482310915199790',    // 📢 Read Disclaimer (button)
   BACK: '6257789602497572109',           // ⬅️ Back (button)
+
+  // ---- Deposit / Top-up flow ----
+  DEPOSIT: '5222040745665379997',        // 💚 ငွေဖြည့်ရန်
+  MIN_AMOUNT: '5864114012542736772',     // 🔥 minimum amount notice
+  KPAY_ICON: '6201684659458280710',      // 💵 KPAY -
+  WAVE_ICON: '6057728063049830775',      // 🆗 WAVE Pay -
+  PARTY: '5226791576495216962',          // 🤩 screenshot pyo pay ba
+  ENTER_AMOUNT: '5987643272045010909',   // ➡️ amount ရိုက်ထည့်ပါ
+  MAX_NOTICE: '5226645496067542621',     // 🙋‍♀️ Maximum notice
+  SUBMITTED: '5201691993775818138',      // 🛫 submitted to admin
+  DEPOSIT_SUCCESS: '5253527915416539991', // 🤟 successful
 };
 
 // ---- Products / Countries data (placeholder - DB ချိတ်ပြီးမှ dynamic လုပ်နိုင်) ----
@@ -117,6 +128,34 @@ const phoneNumberSchema = new mongoose.Schema({
 });
 const PhoneNumber = mongoose.model('PhoneNumber', phoneNumberSchema);
 
+// ---- Payment method settings (singleton doc, admin-editable) ----
+const paymentSettingsSchema = new mongoose.Schema({
+  kbzNumber: { type: String, default: '09784214387' },
+  kbzName: { type: String, default: 'Mg Wai Yan Tun' },
+  waveNumber: { type: String, default: '09792310926' },
+  waveName: { type: String, default: 'Min Oak Soe' },
+});
+const PaymentSettings = mongoose.model('PaymentSettings', paymentSettingsSchema);
+
+async function getPaymentSettings() {
+  let settings = await PaymentSettings.findOne();
+  if (!settings) settings = await PaymentSettings.create({});
+  return settings;
+}
+
+// ---- Deposit / top-up request schema ----
+const depositRequestSchema = new mongoose.Schema({
+  userId: { type: Number, required: true },
+  method: { type: String, required: true }, // kbz | wave
+  amountRequested: { type: Number, required: true },
+  screenshotFileId: { type: String, required: true },
+  status: { type: String, default: 'pending' }, // pending | confirmed | cancelled
+  adminChatId: Number,
+  adminMessageId: Number,
+  createdAt: { type: Date, default: Date.now },
+});
+const DepositRequest = mongoose.model('DepositRequest', depositRequestSchema);
+
 // ---------- HELPERS ----------
 async function getOrCreateUser(from) {
   let user = await User.findOne({ telegramId: from.id });
@@ -143,6 +182,7 @@ function mainMenuKeyboard() {
         ['▪️ Products'],
         ['📦 My Orders', '👤 Account'],
         ['👛 Balance', '👋 Join Channel'],
+        ['💚 ငွေဖြည့်ရန် 💚'],
         ['🌐 Language', '🎁 Redeem Code'],
       ],
       resize_keyboard: true,
@@ -261,6 +301,10 @@ const ADMIN_COMMANDS = [
   '/admin',
   '/addnumber',
   '/cancel',
+  '/editkbznumber',
+  '/editkbzname',
+  '/editwavenumber',
+  '/editwavename',
 ];
 
 function isAdminCommand(text) {
@@ -326,7 +370,15 @@ bot.on('callback_query', async (query) => {
   const messageId = query.message.message_id;
 
   try {
-    if (data.startsWith('svc:')) {
+    if (data.startsWith('deposit:')) {
+      // KBZ Pay / Wave Pay ရွေးလိုက်ရင် - account info ပြပြီး screenshot တောင်း
+      const method = data.split(':')[1]; // kbz | wave
+      const text = await paymentInfoText(method);
+      await bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' });
+      userDepositState.set(query.from.id, { step: 'awaiting_screenshot', method });
+      await bot.answerCallbackQuery(query.id);
+      return;
+    } else if (data.startsWith('svc:')) {
       // Step 1 -> Step 2: service ရွေးပြီးရင် country/flag buttons အဖြစ်ပြောင်း
       const serviceKey = data.split(':')[1];
       await bot.editMessageReplyMarkup(countrySelectKeyboard(serviceKey), {
@@ -454,6 +506,59 @@ bot.on('callback_query', async (query) => {
         reply_markup: keyboard,
       });
       return;
+    } else if (data.startsWith('confirm:')) {
+      // Admin confirms a deposit -> credit user's wallet with requested amount
+      if (query.from.id !== ADMIN_ID) return void (await bot.answerCallbackQuery(query.id));
+      const depositId = data.split(':')[1];
+      const deposit = await DepositRequest.findById(depositId);
+      if (!deposit || deposit.status !== 'pending') {
+        await bot.answerCallbackQuery(query.id, { text: '❌ ဒီ Deposit ကို လုပ်ဆောင်ပြီးသား ဖြစ်နေပါတယ်။', show_alert: true });
+        return;
+      }
+      const depositUser = await getOrCreateUser({ id: deposit.userId });
+      depositUser.balance += deposit.amountRequested;
+      await depositUser.save();
+      deposit.status = 'confirmed';
+      await deposit.save();
+
+      await bot
+        .sendMessage(
+          deposit.userId,
+          `သွင်းငွေ ${fmtKs(deposit.amountRequested)} အောင်မြင်သည်<tg-emoji emoji-id="${EMOTE.DEPOSIT_SUCCESS}">🤟</tg-emoji>`,
+          { parse_mode: 'HTML' }
+        )
+        .catch(() => {});
+
+      await bot
+        .editMessageCaption(`✅ Confirmed — ${fmtKs(deposit.amountRequested)} credited to user ${deposit.userId}.`, {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: { inline_keyboard: [] },
+        })
+        .catch((e) => console.error('editCaption error:', e.message));
+      await bot.answerCallbackQuery(query.id, { text: '✅ Confirmed' });
+      return;
+    } else if (data.startsWith('editamt:')) {
+      if (query.from.id !== ADMIN_ID) return void (await bot.answerCallbackQuery(query.id));
+      const depositId = data.split(':')[1];
+      adminState.set(ADMIN_ID, { step: 'awaiting_edit_amount', depositId });
+      await bot.answerCallbackQuery(query.id);
+      await bot.sendMessage(chatId, '💰 ဖြည့်ပေးမည့် Amount အသစ်ကို ရိုက်ထည့်ပါ (ဂဏန်းသာ)။');
+      return;
+    } else if (data.startsWith('cancelreply:')) {
+      if (query.from.id !== ADMIN_ID) return void (await bot.answerCallbackQuery(query.id));
+      const depositId = data.split(':')[1];
+      adminState.set(ADMIN_ID, { step: 'awaiting_cancel_reason', depositId });
+      await bot.answerCallbackQuery(query.id);
+      await bot.sendMessage(chatId, '❌ Cancel ရတဲ့ အကြောင်းရင်းကို ရိုက်ပို့ပါ (user ဆီ ဒီအတိုင်း ပို့ပါမယ်)။');
+      return;
+    } else if (data.startsWith('editamtreply:')) {
+      if (query.from.id !== ADMIN_ID) return void (await bot.answerCallbackQuery(query.id));
+      const depositId = data.split(':')[1];
+      adminState.set(ADMIN_ID, { step: 'awaiting_editreply_amount', depositId });
+      await bot.answerCallbackQuery(query.id);
+      await bot.sendMessage(chatId, '💰 ဖြည့်ပေးမည့် Amount အသစ်ကို ရိုက်ထည့်ပါ (ဂဏန်းသာ)။');
+      return;
     } else if (data === 'noop') {
       await bot.answerCallbackQuery(query.id);
       return;
@@ -534,6 +639,45 @@ bot.onText(/^🎁 Redeem Code$/, async (msg) => {
     `<tg-emoji emoji-id="${EMOTE.REDEEM_CODE}">🎁</tg-emoji><b>Redeem Code</b>\n\nသင့်ရဲ့ Redeem Code ကို ပို့ပါ။`,
     { parse_mode: 'HTML' }
   );
+});
+
+// ==========================================================
+//  DEPOSIT / TOP-UP FLOW (KBZ Pay / Wave Pay)
+// ==========================================================
+
+// Per-user conversation state while they're submitting a deposit
+// (awaiting screenshot -> awaiting amount). Keyed by telegram user id.
+const userDepositState = new Map();
+
+function depositMethodKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: 'KBZ Pay ဖြင့်ငွေသွင်းမည်', callback_data: 'deposit:kbz' }],
+      [{ text: 'Wave Pay ဖြင့်ငွေသွင်းမည်', callback_data: 'deposit:wave' }],
+    ],
+  };
+}
+
+async function paymentInfoText(method) {
+  const settings = await getPaymentSettings();
+  const line =
+    method === 'kbz'
+      ? `<tg-emoji emoji-id="${EMOTE.KPAY_ICON}">💵</tg-emoji> KPAY- ${settings.kbzNumber}`
+      : `<tg-emoji emoji-id="${EMOTE.WAVE_ICON}">🆗</tg-emoji>WAVE Pay - ${settings.waveNumber}`;
+  const name = method === 'kbz' ? settings.kbzName : settings.waveName;
+
+  return (
+    `<tg-emoji emoji-id="${EMOTE.MIN_AMOUNT}">🔥</tg-emoji>အနည်းဆုံး 1500 ကျပ်မှစဖြည့်ပါ\n\n` +
+    `${line}\n` +
+    `<tg-emoji emoji-id="${EMOTE.WELCOME}">🍬</tg-emoji>name - ${name}\n\n` +
+    `ဆီသို့ ငွေလွဲပြီး screenshot ပို့ပေးပါ<tg-emoji emoji-id="${EMOTE.PARTY}">🤩</tg-emoji>`
+  );
+}
+
+bot.onText(/^💚 ငွေဖြည့်ရန် 💚$/, async (msg) => {
+  await bot.sendMessage(msg.chat.id, 'ငွေဖြည့်ရန် နည်းလမ်းရွေးချယ်ပါ 👇', {
+    reply_markup: depositMethodKeyboard(),
+  });
 });
 
 // ==========================================================
@@ -645,6 +789,10 @@ bot.onText(/^\/admin$/, async (msg) => {
       `/removebalance <id> <amount>\n` +
       `/setbalance <id> <amount>\n` +
       `/addnumber\n` +
+      `/editkbznumber <number>\n` +
+      `/editkbzname <name>\n` +
+      `/editwavenumber <number>\n` +
+      `/editwavename <name>\n` +
       `/stats\n` +
       `/users\n` +
       `/broadcast <message>\n` +
@@ -676,6 +824,41 @@ bot.onText(/^\/addnumber$/, async (msg) => {
     msg.chat.id,
     '📞 ထည့်မည့် Phone Number ကို ပို့ပါ (ဥပမာ - +95xxxxxxxxx)\n\nရပ်ချင်ရင် /cancel ရိုက်ပါ။'
   );
+});
+
+// ==========================================================
+//  Payment info edit commands (KBZ Pay / Wave Pay number & name)
+// ==========================================================
+bot.onText(/^\/editkbznumber (.+)$/, async (msg, match) => {
+  if (msg.from.id !== ADMIN_ID) return;
+  const settings = await getPaymentSettings();
+  settings.kbzNumber = match[1].trim();
+  await settings.save();
+  await bot.sendMessage(msg.chat.id, `✅ KBZ Pay Number ကို ${settings.kbzNumber} အဖြစ် ပြင်ပြီးပါပြီ။`);
+});
+
+bot.onText(/^\/editkbzname (.+)$/, async (msg, match) => {
+  if (msg.from.id !== ADMIN_ID) return;
+  const settings = await getPaymentSettings();
+  settings.kbzName = match[1].trim();
+  await settings.save();
+  await bot.sendMessage(msg.chat.id, `✅ KBZ Pay Name ကို ${settings.kbzName} အဖြစ် ပြင်ပြီးပါပြီ။`);
+});
+
+bot.onText(/^\/editwavenumber (.+)$/, async (msg, match) => {
+  if (msg.from.id !== ADMIN_ID) return;
+  const settings = await getPaymentSettings();
+  settings.waveNumber = match[1].trim();
+  await settings.save();
+  await bot.sendMessage(msg.chat.id, `✅ Wave Pay Number ကို ${settings.waveNumber} အဖြစ် ပြင်ပြီးပါပြီ။`);
+});
+
+bot.onText(/^\/editwavename (.+)$/, async (msg, match) => {
+  if (msg.from.id !== ADMIN_ID) return;
+  const settings = await getPaymentSettings();
+  settings.waveName = match[1].trim();
+  await settings.save();
+  await bot.sendMessage(msg.chat.id, `✅ Wave Pay Name ကို ${settings.waveName} အဖြစ် ပြင်ပြီးပါပြီ။`);
 });
 
 // Generic listener that drives the /addnumber conversation. Only ever
@@ -745,6 +928,203 @@ bot.on('message', async (msg) => {
       msg.chat.id,
       `✅ ${country.flag}${state.phone} ကို session နဲ့အတူ ${country.flag}${country.dial} ${country.name} Account အုပ်စုထဲ ထည့်ပြီးပါပြီ။`
     );
+  }
+
+  if (state.step === 'awaiting_edit_amount' || state.step === 'awaiting_editreply_amount') {
+    const amountText = (msg.text || '').trim();
+    if (!/^[0-9]+$/.test(amountText)) {
+      return bot.sendMessage(msg.chat.id, '❌ ဂဏန်းသာ ရိုက်ထည့်ပါ။');
+    }
+    const amount = Number(amountText);
+    const deposit = await DepositRequest.findById(state.depositId);
+    if (!deposit || deposit.status !== 'pending') {
+      adminState.delete(ADMIN_ID);
+      return bot.sendMessage(msg.chat.id, '❌ ဒီ Deposit ကို လုပ်ဆောင်ပြီးသား ဖြစ်နေပါတယ်။');
+    }
+
+    if (state.step === 'awaiting_edit_amount') {
+      // Edit Amount only -> credit immediately with the admin-specified amount
+      deposit.amountRequested = amount;
+      deposit.status = 'confirmed';
+      await deposit.save();
+      const depositUser = await getOrCreateUser({ id: deposit.userId });
+      depositUser.balance += amount;
+      await depositUser.save();
+      adminState.delete(ADMIN_ID);
+
+      await bot
+        .sendMessage(
+          deposit.userId,
+          `သွင်းငွေ ${fmtKs(amount)} အောင်မြင်သည်<tg-emoji emoji-id="${EMOTE.DEPOSIT_SUCCESS}">🤟</tg-emoji>`,
+          { parse_mode: 'HTML' }
+        )
+        .catch(() => {});
+      if (deposit.adminChatId && deposit.adminMessageId) {
+        await bot
+          .editMessageCaption(`✅ Confirmed (edited) — ${fmtKs(amount)} credited to user ${deposit.userId}.`, {
+            chat_id: deposit.adminChatId,
+            message_id: deposit.adminMessageId,
+            reply_markup: { inline_keyboard: [] },
+          })
+          .catch(() => {});
+      }
+      return bot.sendMessage(msg.chat.id, `✅ User ${deposit.userId} ဆီ ${fmtKs(amount)} ဖြည့်ပေးလိုက်ပါပြီ။`);
+    }
+
+    // Edit Amount & Reply -> store the amount, now ask for the custom reply message
+    adminState.set(ADMIN_ID, { step: 'awaiting_editreply_message', depositId: state.depositId, amount });
+    return bot.sendMessage(msg.chat.id, '✏️ User ဆီ ပို့ချင်တဲ့ Reply စာသားကို ရိုက်ပို့ပါ။');
+  }
+
+  if (state.step === 'awaiting_editreply_message') {
+    const replyText = msg.text || '';
+    if (!replyText.trim()) return bot.sendMessage(msg.chat.id, '❌ Reply စာသား ရိုက်ပို့ပါ။');
+
+    const deposit = await DepositRequest.findById(state.depositId);
+    adminState.delete(ADMIN_ID);
+    if (!deposit || deposit.status !== 'pending') {
+      return bot.sendMessage(msg.chat.id, '❌ ဒီ Deposit ကို လုပ်ဆောင်ပြီးသား ဖြစ်နေပါတယ်။');
+    }
+
+    deposit.amountRequested = state.amount;
+    deposit.status = 'confirmed';
+    await deposit.save();
+    const depositUser = await getOrCreateUser({ id: deposit.userId });
+    depositUser.balance += state.amount;
+    await depositUser.save();
+
+    await bot.sendMessage(deposit.userId, replyText).catch(() => {});
+    if (deposit.adminChatId && deposit.adminMessageId) {
+      await bot
+        .editMessageCaption(
+          `✅ Confirmed (edited + replied) — ${fmtKs(state.amount)} credited to user ${deposit.userId}.`,
+          { chat_id: deposit.adminChatId, message_id: deposit.adminMessageId, reply_markup: { inline_keyboard: [] } }
+        )
+        .catch(() => {});
+    }
+    return bot.sendMessage(msg.chat.id, `✅ ပြီးပါပြီ — User ${deposit.userId} ဆီ ${fmtKs(state.amount)} ဖြည့်ပြီး Reply ပါ ပို့ပြီးပါပြီ။`);
+  }
+
+  if (state.step === 'awaiting_cancel_reason') {
+    const reason = msg.text || '';
+    if (!reason.trim()) return bot.sendMessage(msg.chat.id, '❌ Cancel အကြောင်းရင်း ရိုက်ပို့ပါ။');
+
+    const deposit = await DepositRequest.findById(state.depositId);
+    adminState.delete(ADMIN_ID);
+    if (!deposit || deposit.status !== 'pending') {
+      return bot.sendMessage(msg.chat.id, '❌ ဒီ Deposit ကို လုပ်ဆောင်ပြီးသား ဖြစ်နေပါတယ်။');
+    }
+    deposit.status = 'cancelled';
+    await deposit.save();
+
+    await bot
+      .sendMessage(
+        deposit.userId,
+        `ငွေဖြည့်သွင်းခြင်း မအောင်မြင်ပါ\nမအောင်မြင်ရသည့်အကြောင်းအရင်း : ${reason}`
+      )
+      .catch(() => {});
+    if (deposit.adminChatId && deposit.adminMessageId) {
+      await bot
+        .editMessageCaption(`❌ Cancelled — reason: ${reason}`, {
+          chat_id: deposit.adminChatId,
+          message_id: deposit.adminMessageId,
+          reply_markup: { inline_keyboard: [] },
+        })
+        .catch(() => {});
+    }
+    return bot.sendMessage(msg.chat.id, `❌ User ${deposit.userId} ရဲ့ Deposit ကို Cancel လုပ်ပြီး အကြောင်းကြားပြီးပါပြီ။`);
+  }
+});
+
+// ==========================================================
+//  USER-SIDE DEPOSIT SUBMISSION (screenshot -> amount -> notify admin)
+// ==========================================================
+bot.on('message', async (msg) => {
+  const state = userDepositState.get(msg.from.id);
+  if (!state) return;
+
+  if (state.step === 'awaiting_screenshot') {
+    if (!msg.photo || !msg.photo.length) {
+      return bot.sendMessage(msg.chat.id, '📸 ငွေလွှဲ Screenshot (ပုံ) ကို ပို့ပေးပါ။');
+    }
+    const fileId = msg.photo[msg.photo.length - 1].file_id; // largest size
+    userDepositState.set(msg.from.id, { step: 'awaiting_amount', method: state.method, fileId });
+    await bot.sendMessage(
+      msg.chat.id,
+      `<tg-emoji emoji-id="${EMOTE.ENTER_AMOUNT}">➡️</tg-emoji>မိမိဖြည့်သွင်းထားသည့် ငွေamount အားရိုက်ထည့်ပါ`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  if (state.step === 'awaiting_amount') {
+    const raw = (msg.text || '').trim();
+
+    // မြန်မာဂဏန်း (၀-၉) တွေ ပါနေရင် English ဂဏန်းသာ ရိုက်ခိုင်း
+    if (/[\u1040-\u1049]/.test(raw)) {
+      return bot.sendMessage(msg.chat.id, 'English Number သာ ရိုက်ပေးပါ။ (ဥပမာ - 5000)');
+    }
+    // ဂဏန်းအပြင် စာလုံးတခြား ပါရင် reject + input အလွန်ရှည်ရင်လည်း (bot crash/abuse
+    // ကာကွယ်ရန်) reject
+    if (!/^[0-9]+$/.test(raw) || raw.length > 9) {
+      return bot.sendMessage(msg.chat.id, '🔢 ဂဏန်း (number) သာ ရိုက်ထည့်ပါ။');
+    }
+
+    const amount = Number(raw);
+    if (amount > 100000) {
+      return bot.sendMessage(
+        msg.chat.id,
+        `<tg-emoji emoji-id="${EMOTE.MAX_NOTICE}">🙋‍♀️</tg-emoji>Maximum ထည့်ရှိနိုင်သောပမာဏမှာ ၁သိန်း ကျပ်သာ ဖြစ်ပါသည်၊၊`,
+        { parse_mode: 'HTML' }
+      );
+    }
+    if (amount <= 0) {
+      return bot.sendMessage(msg.chat.id, '🔢 မှန်ကန်တဲ့ ပမာဏကို ရိုက်ထည့်ပါ။');
+    }
+
+    const deposit = await DepositRequest.create({
+      userId: msg.from.id,
+      method: state.method,
+      amountRequested: amount,
+      screenshotFileId: state.fileId,
+    });
+    userDepositState.delete(msg.from.id);
+
+    await bot.sendMessage(
+      msg.chat.id,
+      `သွင်းငွေ ${fmtKs(amount)} အား adminထံသို့ တင်ပြပေးထားပါတယ်။ မကြာမှီ adminမှ ငွေဖြည့်ပေးသွားမည်<tg-emoji emoji-id="${EMOTE.SUBMITTED}">🛫</tg-emoji>`,
+      { parse_mode: 'HTML' }
+    );
+
+    // admin ဆီ notification ပို့ (screenshot + action buttons)
+    const caption =
+      `🧾 Deposit Request\n\n` +
+      `User ID: ${msg.from.id}\n` +
+      `Username: @${msg.from.username || '-'}\n` +
+      `Method: ${state.method.toUpperCase()}\n` +
+      `Amount: ${fmtKs(amount)}`;
+    try {
+      const sent = await bot.sendPhoto(ADMIN_ID, state.fileId, {
+        caption,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '✅ Confirm', callback_data: `confirm:${deposit._id}` },
+              { text: '✏️ Edit Amount', callback_data: `editamt:${deposit._id}` },
+            ],
+            [
+              { text: '❌ Cancel & Reply', callback_data: `cancelreply:${deposit._id}` },
+              { text: '✏️ Edit Amount & Reply', callback_data: `editamtreply:${deposit._id}` },
+            ],
+          ],
+        },
+      });
+      deposit.adminChatId = sent.chat.id;
+      deposit.adminMessageId = sent.message_id;
+      await deposit.save();
+    } catch (err) {
+      console.error('admin deposit notify error:', err.message);
+    }
   }
 });
 
