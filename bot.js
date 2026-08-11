@@ -77,8 +77,8 @@ const EMOTE = {
 
 // ---- Products / Countries data (placeholder - DB ချိတ်ပြီးမှ dynamic လုပ်နိုင်) ----
 const SERVICES = {
-  telegram: { label: `<emoji id=${EMOTE.SVC_TELEGRAM}>📱</emoji> Buy Telegram Accounts`, emoteId: EMOTE.SVC_TELEGRAM },
-  telegramm: { label: `<emoji id=${EMOTE.SVC_TELEGRAMM}>📩</emoji> Buy Telegram Comments`, emoteId: EMOTE.SVC_TELEGRAMM },
+  telegram: { label: 'Buy Telegram Accounts', emoteId: EMOTE.SVC_TELEGRAM },
+  telegramm: { label: 'Buy Telegram Comments', emoteId: EMOTE.SVC_TELEGRAMM },
 };
 
 const COUNTRIES = [
@@ -179,10 +179,19 @@ function mainMenuKeyboard() {
   return {
     reply_markup: {
       keyboard: [
-        [`<emoji id=${EMOTE.PRODUCTS}>▪️</emoji> Products`],
-        [`<emoji id=${EMOTE.MY_ORDERS}>📦</emoji> My Orders`, `<emoji id=${EMOTE.ACCOUNT}>👤</emoji> Account`],
-        [`<emoji id=${EMOTE.BALANCE}>👛</emoji> Balance`, `<emoji id=${EMOTE.JOIN_CHANNEL}>👋</emoji> Join Channel`],
-        [`<emoji id=${EMOTE.LANGUAGE}>🌐</emoji> Language`, `<emoji id=${EMOTE.REDEEM_CODE}>🎁</emoji> Redeem Code`],
+        [{ text: 'Products', icon_custom_emoji_id: EMOTE.PRODUCTS }],
+        [
+          { text: 'My Orders', icon_custom_emoji_id: EMOTE.MY_ORDERS },
+          { text: 'Account', icon_custom_emoji_id: EMOTE.ACCOUNT }
+        ],
+        [
+          { text: 'Balance', icon_custom_emoji_id: EMOTE.BALANCE },
+          { text: 'Join Channel', icon_custom_emoji_id: EMOTE.JOIN_CHANNEL }
+        ],
+        [
+          { text: 'Language', icon_custom_emoji_id: EMOTE.LANGUAGE },
+          { text: 'Redeem Code', icon_custom_emoji_id: EMOTE.REDEEM_CODE }
+        ],
       ],
       resize_keyboard: true,
       is_persistent: true,
@@ -199,8 +208,8 @@ function mainMenuKeyboard() {
 function serviceSelectKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: SERVICES.telegram.label, callback_data: 'svc:telegram' }],
-      [{ text: SERVICES.telegramm.label, callback_data: 'svc:telegramm' }],
+      [{ text: SERVICES.telegram.label, callback_data: 'svc:telegram', icon_custom_emoji_id: SERVICES.telegram.emoteId }],
+      [{ text: SERVICES.telegramm.label, callback_data: 'svc:telegramm', icon_custom_emoji_id: SERVICES.telegramm.emoteId }],
     ],
   };
 }
@@ -209,8 +218,9 @@ function countrySelectKeyboard(serviceKey) {
   return {
     inline_keyboard: COUNTRIES.map((c) => [
       {
-        text: `${c.flag}${c.dial} ${c.name}${c.labelSuffix} ${PRICES[c.code]}ks`,
+        text: `${c.dial} ${c.name}${c.labelSuffix} ${PRICES[c.code]}ks`,
         callback_data: `country:${serviceKey}:${c.code}`,
+        icon_custom_emoji_id: c.emoteId,
       },
     ]),
   };
@@ -251,13 +261,17 @@ async function buildProductCard(serviceKey, country, requestedPage) {
   // return the user to exactly this page afterwards.
   const rows = numbers.length
     ? numbers.map((n) => [
-        { text: `${country.flag}${n.number}`, callback_data: `num:${n._id}:${serviceKey}:${country.code}:${page}` },
+        {
+          text: `${n.number}`,
+          callback_data: `num:${n._id}:${serviceKey}:${country.code}:${page}`,
+          icon_custom_emoji_id: country.emoteId,
+        },
       ])
     : [[{ text: 'လက်ရှိ Number မရှိသေးပါ', callback_data: 'noop' }]];
 
   const navRow = [];
-  if (page > 1) navRow.push({ text: `<emoji id=${EMOTE.BACK}>⬅️</emoji> Back`, callback_data: `page:${serviceKey}:${country.code}:${page - 1}` });
-  if (page < totalPages) navRow.push({ text: `Next <emoji id=${EMOTE.CHOOSE_FLAG}>➡️</emoji>`, callback_data: `page:${serviceKey}:${country.code}:${page + 1}` });
+  if (page > 1) navRow.push({ text: 'Back', callback_data: `page:${serviceKey}:${country.code}:${page - 1}`, icon_custom_emoji_id: EMOTE.BACK });
+  if (page < totalPages) navRow.push({ text: 'Next', callback_data: `page:${serviceKey}:${country.code}:${page + 1}`, icon_custom_emoji_id: EMOTE.CHOOSE_FLAG });
   if (navRow.length) rows.push(navRow);
 
   return { text, keyboard: { inline_keyboard: rows } };
@@ -279,9 +293,9 @@ function buildPrePurchaseCard(phoneDoc, country, serviceKey, page) {
 
   const keyboard = {
     inline_keyboard: [
-      [{ text: `<emoji id=${EMOTE.READ_DISCLAIMER}>📢</emoji> Read Disclaimer`, url: CHANNEL_LINK }],
-      [{ text: `<emoji id=${EMOTE.GET_FLAG_HAPPY}>✅</emoji> Accept & Buy`, callback_data: `accept:${phoneDoc._id}:${serviceKey}:${country.code}:${page}` }],
-      [{ text: `<emoji id=${EMOTE.BACK}>⬅️</emoji> Back`, callback_data: `back:${serviceKey}:${country.code}:${page}` }],
+      [{ text: 'Read Disclaimer', url: CHANNEL_LINK, icon_custom_emoji_id: EMOTE.READ_DISCLAIMER }],
+      [{ text: 'Accept & Buy', callback_data: `accept:${phoneDoc._id}:${serviceKey}:${country.code}:${page}`, icon_custom_emoji_id: EMOTE.GET_FLAG_HAPPY }],
+      [{ text: 'Back', callback_data: `back:${serviceKey}:${country.code}:${page}`, icon_custom_emoji_id: EMOTE.BACK }],
     ],
   };
   return { text, keyboard };
@@ -385,7 +399,7 @@ bot.onText(/^\/menu$/, async (msg) => {
 // ==========================================================
 //  USER MENU HANDLERS (Reply Keyboard button presses)
 // ==========================================================
-bot.onText(/^▪️ Products$/, async (msg) => {
+bot.onText(/^Products$/, async (msg) => {
   await bot.sendMessage(
     msg.chat.id,
     `<tg-emoji emoji-id="${EMOTE.SELECT_PRODUCT}">🖤</tg-emoji><b>Select a product:</b>`,
@@ -607,7 +621,7 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-bot.onText(/^📦 My Orders$/, async (msg) => {
+bot.onText(/^My Orders$/, async (msg) => {
   const user = await getOrCreateUser(msg.from);
   if (!user.orders.length) {
     return bot.sendMessage(
@@ -629,7 +643,7 @@ bot.onText(/^📦 My Orders$/, async (msg) => {
   );
 });
 
-bot.onText(/^👤 Account$/, async (msg) => {
+bot.onText(/^Account$/, async (msg) => {
   const user = await getOrCreateUser(msg.from);
   await bot.sendMessage(
     msg.chat.id,
@@ -643,7 +657,7 @@ bot.onText(/^👤 Account$/, async (msg) => {
   );
 });
 
-bot.onText(/^👛 Balance$/, async (msg) => {
+bot.onText(/^Balance$/, async (msg) => {
   const user = await getOrCreateUser(msg.from);
   await bot.sendMessage(
     msg.chat.id,
@@ -658,7 +672,7 @@ bot.onText(/^👛 Balance$/, async (msg) => {
   );
 });
 
-bot.onText(/^👋 Join Channel$/, async (msg) => {
+bot.onText(/^Join Channel$/, async (msg) => {
   await bot.sendMessage(
     msg.chat.id,
     `<tg-emoji emoji-id="${EMOTE.JOIN_CHANNEL}">👋</tg-emoji><b>Join our Channel</b>\n\n${CHANNEL_LINK}`,
@@ -666,7 +680,7 @@ bot.onText(/^👋 Join Channel$/, async (msg) => {
   );
 });
 
-bot.onText(/^🌐 Language$/, async (msg) => {
+bot.onText(/^Language$/, async (msg) => {
   await bot.sendMessage(
     msg.chat.id,
     `<tg-emoji emoji-id="${EMOTE.LANGUAGE}">🌐</tg-emoji><b>Language</b>\n\nMyanmar (mm) / English (en) - ရွေးချယ်ရန် logic ကို လိုအပ်သလို ထပ်ထည့်နိုင်ပါတယ်။`,
@@ -674,7 +688,7 @@ bot.onText(/^🌐 Language$/, async (msg) => {
   );
 });
 
-bot.onText(/^🎁 Redeem Code$/, async (msg) => {
+bot.onText(/^Redeem Code$/, async (msg) => {
   await bot.sendMessage(
     msg.chat.id,
     `<tg-emoji emoji-id="${EMOTE.REDEEM_CODE}">🎁</tg-emoji><b>Redeem Code</b>\n\nသင့်ရဲ့ Redeem Code ကို ပို့ပါ။`,
