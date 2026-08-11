@@ -85,7 +85,7 @@ function check(name, cond) {
 
 // 4) Pagination pieces exist in source
 const src = fs.readFileSync('./bot.js', 'utf8');
-check('Source has /^ငွေဖြည့်ရန်🤑$/ trigger', src.includes('^ငွေဖြည့်ရန်🤑$'));
+check('Source has /^ငွေဖြည့်ရန်$/ trigger', src.includes('^ငွေဖြည့်ရန်$'));
 check('ORDERS_PER_PAGE = 10', src.includes('const ORDERS_PER_PAGE = 10'));
 check('orders:page: callback handler exists', src.includes("data.startsWith('orders:page:')"));
 check('Page x of y line in orders text', src.includes('📄 Page ${page} of ${totalPages}'));
@@ -134,8 +134,8 @@ async function fireText(pattern) {
       balanceMsg.extra.reply_markup.inline_keyboard[0][0].text.includes('ငွေဖြည့်ရန်')
   );
   check('Balance text contains လက်ရှိ လက်ကျန်ငွေ', balanceMsg && balanceMsg.text.includes('လက်ရှိ လက်ကျန်ငွေ'));
-  check('Balance button text is ငွေဖြည့်ရန်🤑', balanceMsg && balanceMsg.extra.reply_markup.inline_keyboard[0][0].text === 'ငွေဖြည့်ရန်🤑');
-  check('OUT OF STOCK label uses requested wording and emote ID', src.includes("text: '‼️OUT OF STOCK'") && src.includes("OUT_OF_STOCK_1: '5226700140936451703'"));
+  check('Balance button text is ငွေဖြည့်ရန် without ordinary emoji', balanceMsg && balanceMsg.extra.reply_markup.inline_keyboard[0][0].text === 'ငွေဖြည့်ရန်');
+  check('OUT OF STOCK label has no ordinary emoji and keeps premium emote ID', src.includes("text: 'OUT OF STOCK'") && !src.includes("text: '" + '‼️OUT OF STOCK' + "'") && src.includes("OUT_OF_STOCK_1: '5226700140936451703'"));
 
   // Language menu button tap
   await fireText('Language');
