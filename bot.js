@@ -77,8 +77,8 @@ const EMOTE = {
 
 // ---- Products / Countries data (placeholder - DB ချိတ်ပြီးမှ dynamic လုပ်နိုင်) ----
 const SERVICES = {
-  telegram: { label: '📱Buy Telegram Accounts', emoteId: EMOTE.SVC_TELEGRAM },
-  telegramm: { label: '📩Buy Telegram Comments', emoteId: EMOTE.SVC_TELEGRAMM },
+  telegram: { label: `<emoji id=${EMOTE.SVC_TELEGRAM}>📱</emoji> Buy Telegram Accounts`, emoteId: EMOTE.SVC_TELEGRAM },
+  telegramm: { label: `<emoji id=${EMOTE.SVC_TELEGRAMM}>📩</emoji> Buy Telegram Comments`, emoteId: EMOTE.SVC_TELEGRAMM },
 };
 
 const COUNTRIES = [
@@ -179,10 +179,10 @@ function mainMenuKeyboard() {
   return {
     reply_markup: {
       keyboard: [
-        ['▪️ Products'],
-        ['📦 My Orders', '👤 Account'],
-        ['👛 Balance', '👋 Join Channel'],
-        ['🌐 Language', '🎁 Redeem Code'],
+        [`<emoji id=${EMOTE.PRODUCTS}>▪️</emoji> Products`],
+        [`<emoji id=${EMOTE.MY_ORDERS}>📦</emoji> My Orders`, `<emoji id=${EMOTE.ACCOUNT}>👤</emoji> Account`],
+        [`<emoji id=${EMOTE.BALANCE}>👛</emoji> Balance`, `<emoji id=${EMOTE.JOIN_CHANNEL}>👋</emoji> Join Channel`],
+        [`<emoji id=${EMOTE.LANGUAGE}>🌐</emoji> Language`, `<emoji id=${EMOTE.REDEEM_CODE}>🎁</emoji> Redeem Code`],
       ],
       resize_keyboard: true,
       is_persistent: true,
@@ -256,8 +256,8 @@ async function buildProductCard(serviceKey, country, requestedPage) {
     : [[{ text: 'လက်ရှိ Number မရှိသေးပါ', callback_data: 'noop' }]];
 
   const navRow = [];
-  if (page > 1) navRow.push({ text: '⬅️ Back', callback_data: `page:${serviceKey}:${country.code}:${page - 1}` });
-  if (page < totalPages) navRow.push({ text: 'Next ➡️', callback_data: `page:${serviceKey}:${country.code}:${page + 1}` });
+  if (page > 1) navRow.push({ text: `<emoji id=${EMOTE.BACK}>⬅️</emoji> Back`, callback_data: `page:${serviceKey}:${country.code}:${page - 1}` });
+  if (page < totalPages) navRow.push({ text: `Next <emoji id=${EMOTE.CHOOSE_FLAG}>➡️</emoji>`, callback_data: `page:${serviceKey}:${country.code}:${page + 1}` });
   if (navRow.length) rows.push(navRow);
 
   return { text, keyboard: { inline_keyboard: rows } };
@@ -279,9 +279,9 @@ function buildPrePurchaseCard(phoneDoc, country, serviceKey, page) {
 
   const keyboard = {
     inline_keyboard: [
-      [{ text: '📢 Read Disclaimer', url: CHANNEL_LINK }],
-      [{ text: '✅ Accept & Buy', callback_data: `accept:${phoneDoc._id}:${serviceKey}:${country.code}:${page}` }],
-      [{ text: '⬅️ Back', callback_data: `back:${serviceKey}:${country.code}:${page}` }],
+      [{ text: `<emoji id=${EMOTE.READ_DISCLAIMER}>📢</emoji> Read Disclaimer`, url: CHANNEL_LINK }],
+      [{ text: `<emoji id=${EMOTE.GET_FLAG_HAPPY}>✅</emoji> Accept & Buy`, callback_data: `accept:${phoneDoc._id}:${serviceKey}:${country.code}:${page}` }],
+      [{ text: `<emoji id=${EMOTE.BACK}>⬅️</emoji> Back`, callback_data: `back:${serviceKey}:${country.code}:${page}` }],
     ],
   };
   return { text, keyboard };
@@ -318,6 +318,19 @@ function isAdminCommand(text) {
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 bot.on('polling_error', (err) => console.error('Polling error:', err.message));
 
+// ---------- CHAT MENU BUTTON (attach icon ဘေးက icon) ----------
+// User က session clear ပြီး ပြန်ဝင်လာရင် /start ကို ကိုယ်တိုင်ရိုက်စရာမလိုဘဲ
+// text box ဘေး (attach 📎 icon ဘေး) ကလေး icon ကိုနှိပ်ရုံနဲ့ command list
+// (/start, /menu) ပေါ်လာပြီး main menu ကို ချက်ချင်းပြန်ခေါ်နိုင်အောင် သတ်မှတ်ခြင်း
+bot.setMyCommands([
+  { command: 'start', description: '🍬 Main Menu ပြန်ဖွင့်ရန်' },
+  { command: 'menu', description: '📋 Main Menu ပြန်ဖွင့်ရန်' },
+]).catch((err) => console.error('setMyCommands error:', err.message));
+
+bot.setChatMenuButton({ menu_button: { type: 'commands' } }).catch((err) =>
+  console.error('setChatMenuButton error:', err.message)
+);
+
 // In-memory conversation state for the admin's multi-step /addnumber flow.
 // (Single admin, so a simple Map keyed by admin id is enough.)
 const adminState = new Map();
@@ -337,6 +350,24 @@ bot.on('message', async (msg) => {
 //  /start
 // ==========================================================
 bot.onText(/^\/start$/, async (msg) => {
+  const chatId = msg.chat.id;
+  const user = await getOrCreateUser(msg.from);
+
+  const welcomeText =
+    `<tg-emoji emoji-id="${EMOTE.WELCOME}">🍬</tg-emoji><b>DigitalShopMm မှ ကြိုဆိုပါတယ်</b>\n\n` +
+    `🛍Digital Products နှင့် Services များကို ငွေဖြည့်သွင်းပြီး လိုချင်သည့် ပစ္စည်းကို တိုက်ရိုက် လျှင်မြန်စွာဝယ်ယူနိုင်ပါသည်🛍\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.WALLET}">💳</tg-emoji>Wallet Balance: ${fmtKs(user.balance)}`;
+
+  await bot.sendMessage(chatId, welcomeText, {
+    parse_mode: 'HTML',
+    ...mainMenuKeyboard(),
+  });
+});
+
+// /menu -> text box ဘေးက menu icon ကနေရော၊ ရိုက်ရိုက်ပို့ပို့ /start အတိုင်းပဲ
+// main menu ကို ချက်ချင်းပြန်ဖွင့်ပေးမယ် (session clear ဖြစ်နေလည်း /start
+// ကို ကိုယ်တိုင်ရိုက်စရာမလို)
+bot.onText(/^\/menu$/, async (msg) => {
   const chatId = msg.chat.id;
   const user = await getOrCreateUser(msg.from);
 
