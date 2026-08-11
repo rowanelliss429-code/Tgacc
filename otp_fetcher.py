@@ -2,7 +2,7 @@ import asyncio
 import sys
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 
@@ -28,34 +28,26 @@ async def fetch_otp_and_check_login(session_str):
                 if not otp_data and re.search(r'\b\d{5,6}\b', text):
                     otp_data = {
                         "text": text,
-                        "date": str(msg.date)
+                        "date": msg.date.timestamp()
                     }
                     break
 
-        # 2. Check for new authorizations (active devices)
-        new_login_detected = False
+        # 2. Get all authorizations to find the latest login
+        latest_auth_date = 0
         try:
             authorizations = await client(functions.account.GetAuthorizationsRequest())
-            # A new login is detected if there's more than 1 session 
-            # OR if a session was created very recently (e.g., in the last 10 minutes)
-            now = datetime.now(timezone.utc)
             for auth in authorizations.authorizations:
-                # If the authorization is not the current one and was created recently
                 if not auth.current:
-                    auth_date = auth.date
-                    if now - auth_date < timedelta(minutes=10):
-                        new_login_detected = True
-                        break
-            
-            # Also, if total sessions > 1, it's highly likely a user has logged in
-            if not new_login_detected and len(authorizations.authorizations) > 1:
-                new_login_detected = True
+                    auth_ts = auth.date.timestamp()
+                    if auth_ts > latest_auth_date:
+                        latest_auth_date = auth_ts
         except Exception as auth_err:
-            print(f"Auth check error: {auth_err}", file=sys.stderr)
+            pass
 
         return {
             "otp": otp_data,
-            "new_login": new_login_detected
+            "latest_auth_date": latest_auth_date,
+            "session_count": len(authorizations.authorizations) if 'authorizations' in locals() else 1
         }
     except Exception as e:
         return {"error": str(e)}

@@ -67,7 +67,8 @@ const EMOTE = {
   BACK: '6257789602497572109',           // ⬅️ Back (button)
 
   // ---- Deposit / Top-up flow ----
-  DEPOSIT: '5222040745665379997',        // 💚 ငွေဖြည့်ရန်
+  DEPOSIT: '5222040745665379997',        // 💚 ငွေဖြည့်ရန် (ဟောင်း)
+  DEPOSIT_NEW: '5386757680679377085',     // 🤑 ငွေဖြည့်ရန် (Premium emote အသစ်)
   MIN_AMOUNT: '5864114012542736772',     // 🔥 minimum amount notice
   KPAY_ICON: '6201684659458280710',      // 💵 KPAY -
   WAVE_ICON: '6057728063049830775',      // 🆗 WAVE Pay -
@@ -77,6 +78,9 @@ const EMOTE = {
   SUBMITTED: '5201691993775818138',      // 🛫 submitted to admin
   DEPOSIT_SUCCESS: '5253527915416539991', // 🤟 successful
   GET_OTP: '6217723016529316157',
+  OUT_OF_STOCK_1: '5226700140936451703', // ‼️
+  OUT_OF_STOCK_2: '6260460969076465267', // ➡️
+  OUT_OF_STOCK_3: '6257789602497572109', // ⬅️
 };
 
 // ---- Products / Countries data (placeholder - DB ချိတ်ပြီးမှ dynamic လုပ်နိုင်) ----
@@ -108,6 +112,7 @@ const userSchema = new mongoose.Schema({
   firstName: String,
   balance: { type: Number, default: 0 },
   language: { type: String, default: 'mm' },
+  isBanned: { type: Boolean, default: false },
   orders: [
     {
       orderId: String,
@@ -116,12 +121,29 @@ const userSchema = new mongoose.Schema({
       sessionText: String,
       amount: Number,
       status: { type: String, default: 'pending' },
+      loginConfirmed: { type: Boolean, default: false },
       createdAt: { type: Date, default: Date.now },
     },
   ],
   createdAt: { type: Date, default: Date.now },
 });
 const User = mongoose.model('User', userSchema);
+
+const redeemCodeSchema = new mongoose.Schema({
+  code: { type: String, required: true, unique: true },
+  amount: { type: Number, required: true },
+  maxUses: { type: Number, required: true },
+  currentUses: { type: Number, default: 0 },
+  usedBy: [Number], // Array of telegramIds
+  createdAt: { type: Date, default: Date.now },
+});
+const RedeemCode = mongoose.model('RedeemCode', redeemCodeSchema);
+
+const configSchema = new mongoose.Schema({
+  key: { type: String, required: true, unique: true },
+  value: mongoose.Schema.Types.Mixed,
+});
+const Config = mongoose.model('Config', configSchema);
 
 // ---- Phone Number (account inventory) schema ----
 const phoneNumberSchema = new mongoose.Schema({
@@ -274,7 +296,15 @@ async function buildProductCard(serviceKey, country, requestedPage) {
           icon_custom_emoji_id: country.emoteId,
         },
       ])
-    : [[{ text: 'လက်ရှိ Number မရှိသေးပါ', callback_data: 'noop' }]];
+    : [
+        [
+          { 
+            text: '‼️➡️OUT OF STOCK ⬅️‼️', 
+            callback_data: 'noop',
+            icon_custom_emoji_id: EMOTE.OUT_OF_STOCK_1 // ‼️
+          }
+        ]
+      ];
 
   const navRow = [];
   if (page > 1) navRow.push({ text: 'Back', callback_data: `page:${serviceKey}:${country.code}:${page - 1}`, icon_custom_emoji_id: EMOTE.BACK });
@@ -316,19 +346,21 @@ function buildPrePurchaseCard(phoneDoc, country, serviceKey, page) {
 // Admin-only commands. If a non-admin user sends any of these,
 // the bot stays completely silent (no reply at all).
 const ADMIN_COMMANDS = [
-  '/addbalance',
-  '/removebalance',
-  '/setbalance',
+  '/admin',
+  '/addmoney',
+  '/reducemoney',
+  '/userinfo',
+  '/ban',
+  '/unban',
+  '/setchannel',
+  '/editkbz',
+  '/editwave',
+  '/redeemgen',
+  '/dbstats',
+  '/dbdel',
   '/stats',
   '/broadcast',
-  '/users',
-  '/admin',
   '/addnumber',
-  '/cancel',
-  '/editkbznumber',
-  '/editkbzname',
-  '/editwavenumber',
-  '/editwavename',
 ];
 
 function isAdminCommand(text) {
@@ -361,19 +393,141 @@ bot.setChatMenuButton({ menu_button: { type: 'commands' } }).catch((err) =>
 const adminState = new Map();
 
 // ---------- GLOBAL ADMIN GATE ----------
-// This runs for every message. If the text matches an admin-only
-// command and sender is NOT the admin -> silently drop (no reply).
 bot.on('message', async (msg) => {
   const text = msg.text || '';
-  if (isAdminCommand(text) && msg.from.id !== ADMIN_ID) {
-    // user သာသုံးရင် ဘာမှ လုံးဝ ပြန်မပို့ဘူး
-    return;
+  const userId = msg.from.id;
+  const chatId = msg.chat.id;
+
+  // Global Admin Check
+  if (isAdminCommand(text) && userId !== ADMIN_ID) return;
+
+  // Ban Check
+  const user = await getOrCreateUser(msg.from);
+  if (user.isBanned && userId !== ADMIN_ID) {
+    return bot.sendMessage(chatId, '❌ သင်သည် Bot အသုံးပြုခွင့် ပိတ်ပင်ခံထားရပါသည်။');
+  }
+
+  // Admin Command Handlers
+  if (userId === ADMIN_ID) {
+    if (text.startsWith('/addmoney ')) {
+      const [, targetId, amount] = text.split(' ');
+      const target = await User.findOne({ telegramId: Number(targetId) });
+      if (!target) return bot.sendMessage(chatId, '❌ User မတွေ့ပါ။');
+      target.balance += Number(amount);
+      await target.save();
+      return bot.sendMessage(chatId, `✅ User ${targetId} ဆီ ${fmtKs(amount)} ထည့်ပေးလိုက်ပါပြီ။`);
+    }
+    if (text.startsWith('/reducemoney ')) {
+      const [, targetId, amount] = text.split(' ');
+      const target = await User.findOne({ telegramId: Number(targetId) });
+      if (!target) return bot.sendMessage(chatId, '❌ User မတွေ့ပါ။');
+      target.balance -= Number(amount);
+      await target.save();
+      return bot.sendMessage(chatId, `✅ User ${targetId} ဆီမှ ${fmtKs(amount)} နုတ်လိုက်ပါပြီ။`);
+    }
+    if (text.startsWith('/ban ')) {
+      const targetId = text.split(' ')[1];
+      await User.updateOne({ telegramId: Number(targetId) }, { isBanned: true });
+      return bot.sendMessage(chatId, `✅ User ${targetId} ကို Ban လိုက်ပါပြီ။`);
+    }
+    if (text.startsWith('/unban ')) {
+      const targetId = text.split(' ')[1];
+      await User.updateOne({ telegramId: Number(targetId) }, { isBanned: false });
+      return bot.sendMessage(chatId, `✅ User ${targetId} ကို Unban လိုက်ပါပြီ။`);
+    }
+    if (text.startsWith('/userinfo ')) {
+      const targetId = text.split(' ')[1];
+      const target = await User.findOne({ telegramId: Number(targetId) });
+      if (!target) return bot.sendMessage(chatId, '❌ User မတွေ့ပါ။');
+      return bot.sendMessage(chatId, `👤 <b>User Info</b>\nID: ${target.telegramId}\nUser: @${target.username}\nBalance: ${fmtKs(target.balance)}\nBanned: ${target.isBanned}`, { parse_mode: 'HTML' });
+    }
+    if (text.startsWith('/setchannel ')) {
+      const url = text.split(' ')[1];
+      await Config.updateOne({ key: 'channel_link' }, { value: url }, { upsert: true });
+      return bot.sendMessage(chatId, `✅ Channel link ကို ${url} သို့ ပြောင်းလိုက်ပါပြီ။`);
+    }
+    if (text.startsWith('/editkbz ')) {
+      const [, num, name] = text.split(' ');
+      await Config.updateOne({ key: 'kbz_pay' }, { value: { number: num, name: name } }, { upsert: true });
+      return bot.sendMessage(chatId, `✅ KBZ Pay ပြင်ပြီးပါပြီ။`);
+    }
+    if (text.startsWith('/editwave ')) {
+      const [, num, name] = text.split(' ');
+      await Config.updateOne({ key: 'wave_pay' }, { value: { number: num, name: name } }, { upsert: true });
+      return bot.sendMessage(chatId, `✅ Wave Pay ပြင်ပြီးပါပြီ။`);
+    }
+    if (text.startsWith('/redeemgen ')) {
+      const [, code, amount, maxUses] = text.split(' ');
+      await RedeemCode.create({ code, amount: Number(amount), maxUses: Number(maxUses) });
+      return bot.sendMessage(chatId, `✅ Redeem Code <code>${code}</code> ထုတ်ပြီးပါပြီ။ (${maxUses} users, ${amount} Ks)`, { parse_mode: 'HTML' });
+    }
+    if (text === '/dbstats') {
+      const u = await User.countDocuments();
+      const p = await PhoneNumber.countDocuments();
+      const r = await RedeemCode.countDocuments();
+      return bot.sendMessage(chatId, `📊 <b>Database Stats</b>\nUsers: ${u}\nNumbers: ${p}\nRedeem Codes: ${r}`, { parse_mode: 'HTML' });
+    }
+    if (text.startsWith('/dbdel ')) {
+      const [, col, id] = text.split(' ');
+      if (col === 'user') await User.deleteOne({ telegramId: Number(id) });
+      if (col === 'phone') await PhoneNumber.deleteOne({ _id: id });
+      if (col === 'redeem') await RedeemCode.deleteOne({ code: id });
+      return bot.sendMessage(chatId, `✅ Deleted from ${col}.`);
+    }
+  }
+
+  // Redeem Code Step
+  const state = adminState.get(userId);
+  if (state && state.step === 'awaiting_redeem_code') {
+    const codeStr = text.trim();
+    const redeem = await RedeemCode.findOne({ code: codeStr });
+    adminState.delete(userId);
+
+    if (!redeem) return bot.sendMessage(chatId, '❌ မှားယွင်းသော Redeem Code ဖြစ်နေပါသည်။');
+    if (redeem.usedBy.includes(userId)) return bot.sendMessage(chatId, '❌ သင်သည် ဤ Code ကို အသုံးပြုပြီးသား ဖြစ်ပါသည်။');
+    if (redeem.currentUses >= redeem.maxUses) return bot.sendMessage(chatId, '❌ ဤ Code သည် အသုံးပြုနိုင်သည့် အကြိမ်အရေအတွက် ပြည့်သွားပါပြီ။');
+
+    redeem.currentUses += 1;
+    redeem.usedBy.push(userId);
+    await redeem.save();
+    user.balance += redeem.amount;
+    await user.save();
+    return bot.sendMessage(chatId, `🎉 <b>အောင်မြင်ပါသည်!</b>\nRedeem Code အသုံးပြုမှုကြောင့် ${fmtKs(redeem.amount)} ကို Wallet ထဲသို့ ထည့်သွင်းပေးလိုက်ပါပြီ။`, { parse_mode: 'HTML' });
   }
 });
 
 // ==========================================================
 //  /start
 // ==========================================================
+bot.onText(/^\/admin$/, async (msg) => {
+  if (msg.from.id !== ADMIN_ID) return;
+
+  const adminHelp = 
+    `🛠 <b>Admin Panel Commands</b>\n\n` +
+    `👤 <b>User Management</b>\n` +
+    `• <code>/userinfo [userId]</code> - User အချက်အလက်ကြည့်ရန်\n` +
+    `• <code>/addmoney [userId] [amount]</code> - ငွေထည့်ရန်\n` +
+    `• <code>/reducemoney [userId] [amount]</code> - ငွေနုတ်ရန်\n` +
+    `• <code>/ban [userId]</code> - User ကို Ban ရန်\n` +
+    `• <code>/unban [userId]</code> - User ကို Unban ရန်\n\n` +
+    `⚙️ <b>Settings</b>\n` +
+    `• <code>/setchannel [url]</code> - Channel Link ပြောင်းရန်\n` +
+    `• <code>/editkbz [number] [name]</code> - KBZ Pay ပြင်ရန်\n` +
+    `• <code>/editwave [number] [name]</code> - Wave Pay ပြင်ရန်\n\n` +
+    `🎁 <b>Redeem Code</b>\n` +
+    `• <code>/redeemgen [code] [amount] [maxUses]</code> - Code ထုတ်ရန်\n` +
+    `<i>Example: /redeemgen 100ks 100 10</i>\n\n` +
+    `📊 <b>Database & Stats</b>\n` +
+    `• <code>/dbstats</code> - Database data အရေအတွက်ကြည့်ရန်\n` +
+    `• <code>/dbdel [collection] [id]</code> - Data ဖျက်ရန်\n` +
+    `<i>Collections: user, phone, redeem</i>\n\n` +
+    `📢 <b>Other</b>\n` +
+    `• <code>/broadcast [message]</code> - User အားလုံးဆီ စာပို့ရန်\n` +
+    `• <code>/addnumber</code> - Number အသစ်ထည့်ရန်`;
+
+  await bot.sendMessage(msg.chat.id, adminHelp, { parse_mode: 'HTML' });
+});
+
 bot.onText(/^\/start$/, async (msg) => {
   const chatId = msg.chat.id;
   const user = await getOrCreateUser(msg.from);
@@ -623,35 +777,54 @@ bot.on('callback_query', async (query) => {
 
         if (result.error) {
           await bot.sendMessage(chatId, `❌ Error: ${result.error}\n\nOTP မရရှိသေးပါ။ Telegram တွင် OTP ပို့ထားခြင်း ရှိမရှိ စစ်ဆေးပြီး Resend ကို နှိပ်ပါ။`);
-        } else if (!result.otp) {
-          await bot.sendMessage(chatId, `OTP မရရှိသေးပါ။ Telegram တွင် OTP ပို့ထားခြင်း ရှိမရှိ စစ်ဆေးပြီး Resend ကို နှိပ်ပါ။`, {
-            reply_markup: {
-              inline_keyboard: [[{ text: 'Resend', callback_data: `resend:${orderId}`, icon_custom_emoji_id: EMOTE.GET_OTP }]]
-            }
-          });
         } else {
-          const otpMatch = result.otp.text.match(/\d{5,6}/);
-          const otpCode = otpMatch ? otpMatch[0] : result.otp.text;
-          
-          let otpText = `💰 <b>OTP Code:</b> <code>${otpCode}</code>\n` +
-                        `🔒 <b>2step password:</b> <code>12345678@Nn</code>`;
-          
-          if (result.new_login) {
-            otpText += `\n\n✅ <b>Successfully Login</b>`;
+          // Check for new login in this action too
+          const orderTimeTs = order.createdAt.getTime() / 1000;
+          let isNewLogin = false;
+          if (result.latest_auth_date > orderTimeTs) {
+            isNewLogin = true;
+            if (!order.loginConfirmed) {
+              await User.updateOne(
+                { telegramId: user.telegramId, 'orders.orderId': order.orderId },
+                { $set: { 'orders.$.loginConfirmed': true } }
+              );
+            }
           }
 
-          await bot.sendMessage(chatId, otpText, {
-            parse_mode: 'HTML',
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: 'Copy OTP', copy_text: { text: otpCode } },
-                  { text: 'Copy 2FA', copy_text: { text: '12345678@Nn' } }
-                ],
-                [{ text: 'Resend', callback_data: `resend:${orderId}`, icon_custom_emoji_id: EMOTE.GET_OTP }]
-              ]
+          if (!result.otp) {
+            let msg = `OTP မရရှိသေးပါ။ Telegram တွင် OTP ပို့ထားခြင်း ရှိမရှိ စစ်ဆေးပြီး Resend ကို နှိပ်ပါ။`;
+            if (isNewLogin) msg += `\n\n✅ <b>Successfully Login</b>`;
+            
+            await bot.sendMessage(chatId, msg, {
+              parse_mode: 'HTML',
+              reply_markup: {
+                inline_keyboard: [[{ text: 'Resend', callback_data: `resend:${orderId}`, icon_custom_emoji_id: EMOTE.GET_OTP }]]
+              }
+            });
+          } else {
+            const otpMatch = result.otp.text.match(/\d{5,6}/);
+            const otpCode = otpMatch ? otpMatch[0] : result.otp.text;
+            
+            let otpText = `💰 <b>OTP Code:</b> <code>${otpCode}</code>\n` +
+                          `🔒 <b>2step password:</b> <code>12345678@Nn</code>`;
+            
+            if (isNewLogin) {
+              otpText += `\n\n✅ <b>Successfully Login</b>`;
             }
-          });
+
+            await bot.sendMessage(chatId, otpText, {
+              parse_mode: 'HTML',
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: 'Copy OTP', copy_text: { text: otpCode } },
+                    { text: 'Copy 2FA', copy_text: { text: '12345678@Nn' } }
+                  ],
+                  [{ text: 'Resend', callback_data: `resend:${orderId}`, icon_custom_emoji_id: EMOTE.GET_OTP }]
+                ]
+              }
+            });
+          }
         }
       } catch (err) {
         console.error('OTP Fetch Error:', err);
@@ -718,6 +891,36 @@ bot.on('callback_query', async (query) => {
       await bot.answerCallbackQuery(query.id);
       await bot.sendMessage(chatId, '💰 ဖြည့်ပေးမည့် Amount အသစ်ကို ရိုက်ထည့်ပါ (ဂဏန်းသာ)။');
       return;
+    } else if (data.startsWith('orders:page:')) {
+      // My Orders list ရဲ့ Back / Next pagination
+      const targetPage = Number(data.split(':')[2]);
+      const user = await getOrCreateUser(query.from);
+      if (!user.orders.length) {
+        await bot.editMessageText(
+          `<tg-emoji emoji-id="${EMOTE.MY_ORDERS}">📦</tg-emoji><b>My Orders</b>\n\nသင့်မှာ Order မရှိသေးပါ။`,
+          { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', reply_markup: { inline_keyboard: [] } }
+        );
+      } else {
+        const totalPages = Math.max(1, Math.ceil(user.orders.length / ORDERS_PER_PAGE));
+        const page = Math.min(Math.max(1, targetPage), totalPages);
+        await bot.editMessageText(ordersPageText(user, page, totalPages), {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'HTML',
+          reply_markup: totalPages > 1
+            ? {
+                inline_keyboard: [
+                  [
+                    ...(page > 1 ? [{ text: '⬅️ Back', callback_data: `orders:page:${page - 1}` }] : []),
+                    ...(page < totalPages ? [{ text: 'Next ➡️', callback_data: `orders:page:${page + 1}` }] : []),
+                  ],
+                ],
+              }
+            : { inline_keyboard: [] },
+        });
+      }
+      await bot.answerCallbackQuery(query.id);
+      return;
     } else if (data === 'noop') {
       await bot.answerCallbackQuery(query.id);
       return;
@@ -729,6 +932,51 @@ bot.on('callback_query', async (query) => {
   }
 });
 
+// ---------- MY ORDERS PAGINATION ----------
+// Orders များလာရင် ဖုန်းမသွားအောင် page တစ်ခုလျှင် 10 account နဲ့
+// Back/Next inline buttons ပါတဲ့ paginated list ပြပေးမယ်။
+const ORDERS_PER_PAGE = 10;
+
+function ordersPageText(user, page, totalPages) {
+  const pageOrders = user.orders.slice(
+    (page - 1) * ORDERS_PER_PAGE,
+    page * ORDERS_PER_PAGE
+  );
+  const globalIdx = (page - 1) * ORDERS_PER_PAGE;
+  const list = pageOrders
+    .map(
+      (o, i) =>
+        `${globalIdx + i + 1}. ${o.productName} - ${fmtKs(o.amount)} [${o.status}]`
+    )
+    .join('\n');
+  return (
+    `<tg-emoji emoji-id="${EMOTE.MY_ORDERS}">📦</tg-emoji><b>My Orders</b>\n` +
+    `━━━━━━━━━━━━━━━━\n` +
+    `📄 Page ${page} of ${totalPages}\n` +
+    `━━━━━━━━━━━━━━━━\n\n` +
+    `${list}`
+  );
+}
+
+async function sendOrdersPage(msg, user, requestedPage) {
+  const totalPages = Math.max(1, Math.ceil(user.orders.length / ORDERS_PER_PAGE));
+  const page = Math.min(Math.max(1, requestedPage || 1), totalPages);
+  const keyboard = { inline_keyboard: [] };
+
+  if (totalPages > 1) {
+    const navRow = [];
+    if (page > 1) navRow.push({ text: '⬅️ Back', callback_data: `orders:page:${page - 1}` });
+    if (page < totalPages) navRow.push({ text: 'Next ➡️', callback_data: `orders:page:${page + 1}` });
+    if (navRow.length) keyboard.inline_keyboard.push(navRow);
+  }
+
+  await bot.sendMessage(
+    msg.chat.id,
+    ordersPageText(user, page, totalPages),
+    { parse_mode: 'HTML', reply_markup: keyboard }
+  );
+}
+
 bot.onText(/^My Orders$/, async (msg) => {
   const user = await getOrCreateUser(msg.from);
   if (!user.orders.length) {
@@ -738,17 +986,7 @@ bot.onText(/^My Orders$/, async (msg) => {
       { parse_mode: 'HTML' }
     );
   }
-  const list = user.orders
-    .map(
-      (o, i) =>
-        `${i + 1}. ${o.productName} - ${fmtKs(o.amount)} [${o.status}]`
-    )
-    .join('\n');
-  await bot.sendMessage(
-    msg.chat.id,
-    `<tg-emoji emoji-id="${EMOTE.MY_ORDERS}">📦</tg-emoji><b>My Orders</b>\n\n${list}`,
-    { parse_mode: 'HTML' }
-  );
+  await sendOrdersPage(msg, user, 1);
 });
 
 bot.onText(/^Account$/, async (msg) => {
@@ -774,24 +1012,27 @@ bot.onText(/^Balance$/, async (msg) => {
     {
       parse_mode: 'HTML',
       reply_markup: {
-        inline_keyboard: [[{ text: '💚 ငွေဖြည့်ရန် 💚', callback_data: 'opendeposit' }]],
+        inline_keyboard: [[{ text: '<tg-emoji emoji-id="5386757680679377085">🤑</tg-emoji>ငွေဖြည့်ရန်🤑', parse_mode: 'HTML', callback_data: 'opendeposit' }]],
       },
     }
   );
 });
 
 bot.onText(/^Join Channel$/, async (msg) => {
+  const channelLink = (await Config.findOne({ key: 'channel_link' }))?.value || CHANNEL_LINK;
   await bot.sendMessage(
     msg.chat.id,
-    `<tg-emoji emoji-id="${EMOTE.JOIN_CHANNEL}">👋</tg-emoji><b>Join our Channel</b>\n\n${CHANNEL_LINK}`,
+    `<tg-emoji emoji-id="${EMOTE.JOIN_CHANNEL}">👋</tg-emoji><b>Join our Channel</b>\n\n${channelLink}`,
     { parse_mode: 'HTML' }
   );
 });
 
 bot.onText(/^Language$/, async (msg) => {
+  const user = await getOrCreateUser(msg.from);
+  const langLabel = user.language === 'en' ? 'English (en)' : 'Myanmar (mm)';
   await bot.sendMessage(
     msg.chat.id,
-    `<tg-emoji emoji-id="${EMOTE.LANGUAGE}">🌐</tg-emoji><b>Language</b>\n\nMyanmar (mm) / English (en) - ရွေးချယ်ရန် logic ကို လိုအပ်သလို ထပ်ထည့်နိုင်ပါတယ်။`,
+    `<tg-emoji emoji-id="${EMOTE.LANGUAGE}">🌐</tg-emoji><b>Language : ${langLabel}</b>`,
     { parse_mode: 'HTML' }
   );
 });
@@ -799,9 +1040,10 @@ bot.onText(/^Language$/, async (msg) => {
 bot.onText(/^Redeem Code$/, async (msg) => {
   await bot.sendMessage(
     msg.chat.id,
-    `<tg-emoji emoji-id="${EMOTE.REDEEM_CODE}">🎁</tg-emoji><b>Redeem Code</b>\n\nသင့်ရဲ့ Redeem Code ကို ပို့ပါ။`,
+    `<tg-emoji emoji-id="${EMOTE.REDEEM_CODE}">🎁</tg-emoji><b>Redeem Code</b>\n\nAdmin ထံမှ ရရှိထားသော code ကို ရိုက်ပို့ပေးပါ...`,
     { parse_mode: 'HTML' }
   );
+  adminState.set(msg.from.id, { step: 'awaiting_redeem_code' });
 });
 
 // ==========================================================
@@ -822,12 +1064,14 @@ function depositMethodKeyboard() {
 }
 
 async function paymentInfoText(method) {
-  const settings = await getPaymentSettings();
+  const kbz = (await Config.findOne({ key: 'kbz_pay' }))?.value || { number: '09784214387', name: 'Mg Wai Yan Tun' };
+  const wave = (await Config.findOne({ key: 'wave_pay' }))?.value || { number: '09792310926', name: 'Min Oak Soe' };
+  
   const line =
     method === 'kbz'
-      ? `<tg-emoji emoji-id="${EMOTE.KPAY_ICON}">💵</tg-emoji> KPAY- ${settings.kbzNumber}`
-      : `<tg-emoji emoji-id="${EMOTE.WAVE_ICON}">🆗</tg-emoji>WAVE Pay - ${settings.waveNumber}`;
-  const name = method === 'kbz' ? settings.kbzName : settings.waveName;
+      ? `<tg-emoji emoji-id="${EMOTE.KPAY_ICON}">💵</tg-emoji> KPAY- ${kbz.number}`
+      : `<tg-emoji emoji-id="${EMOTE.WAVE_ICON}">🆗</tg-emoji>WAVE Pay - ${wave.number}`;
+  const name = method === 'kbz' ? kbz.name : wave.name;
 
   return (
     `<tg-emoji emoji-id="${EMOTE.MIN_AMOUNT}">🔥</tg-emoji>အနည်းဆုံး 1500 ကျပ်မှစဖြည့်ပါ\n\n` +
@@ -837,7 +1081,7 @@ async function paymentInfoText(method) {
   );
 }
 
-bot.onText(/^💚 ငွေဖြည့်ရန် 💚$/, async (msg) => {
+bot.onText(/^🤑ငွေဖြည့်ရန်🤑$/, async (msg) => {
   await bot.sendMessage(msg.chat.id, 'ငွေဖြည့်ရန် နည်းလမ်းရွေးချယ်ပါ 👇', {
     reply_markup: depositMethodKeyboard(),
   });
@@ -847,59 +1091,6 @@ bot.onText(/^💚 ငွေဖြည့်ရန် 💚$/, async (msg) => {
 //  ADMIN COMMANDS  (only run if msg.from.id === ADMIN_ID,
 //  the global gate above already blocked non-admins)
 // ==========================================================
-
-// /addbalance <telegramId> <amount>
-bot.onText(/^\/addbalance (\d+) (\d+)$/, async (msg, match) => {
-  if (msg.from.id !== ADMIN_ID) return;
-  const [, targetId, amount] = match;
-  const user = await User.findOneAndUpdate(
-    { telegramId: Number(targetId) },
-    { $inc: { balance: Number(amount) } },
-    { new: true, upsert: true }
-  );
-  await bot.sendMessage(
-    msg.chat.id,
-    `✅ User ${targetId} ကို ${fmtKs(amount)} ထည့်ပေးလိုက်ပါပြီ။ လက်ရှိလက်ကျန်: ${fmtKs(user.balance)}`
-  );
-  // အသိပေးစာ user ဆီပို့မယ်
-  bot
-    .sendMessage(
-      Number(targetId),
-      `💳 သင့် Wallet ထဲကို ${fmtKs(amount)} ဖြည့်ပေးလိုက်ပါပြီ။ လက်ရှိလက်ကျန်: ${fmtKs(user.balance)}`
-    )
-    .catch(() => {});
-});
-
-// /removebalance <telegramId> <amount>
-bot.onText(/^\/removebalance (\d+) (\d+)$/, async (msg, match) => {
-  if (msg.from.id !== ADMIN_ID) return;
-  const [, targetId, amount] = match;
-  const user = await User.findOneAndUpdate(
-    { telegramId: Number(targetId) },
-    { $inc: { balance: -Number(amount) } },
-    { new: true }
-  );
-  if (!user) return bot.sendMessage(msg.chat.id, '❌ User မတွေ့ပါ။');
-  await bot.sendMessage(
-    msg.chat.id,
-    `✅ User ${targetId} ဆီကနေ ${fmtKs(amount)} နှုတ်လိုက်ပါပြီ။ လက်ရှိလက်ကျန်: ${fmtKs(user.balance)}`
-  );
-});
-
-// /setbalance <telegramId> <amount>
-bot.onText(/^\/setbalance (\d+) (\d+)$/, async (msg, match) => {
-  if (msg.from.id !== ADMIN_ID) return;
-  const [, targetId, amount] = match;
-  const user = await User.findOneAndUpdate(
-    { telegramId: Number(targetId) },
-    { balance: Number(amount) },
-    { new: true, upsert: true }
-  );
-  await bot.sendMessage(
-    msg.chat.id,
-    `✅ User ${targetId} ရဲ့ balance ကို ${fmtKs(user.balance)} အဖြစ် သတ်မှတ်လိုက်ပါပြီ။`
-  );
-});
 
 // /stats
 bot.onText(/^\/stats$/, async (msg) => {
@@ -913,16 +1104,6 @@ bot.onText(/^\/stats$/, async (msg) => {
     msg.chat.id,
     `📊 Bot Stats\n\nTotal Users: ${totalUsers}\nTotal Wallet Balance (all users): ${fmtKs(totalBalance)}`
   );
-});
-
-// /users  (list latest 20)
-bot.onText(/^\/users$/, async (msg) => {
-  if (msg.from.id !== ADMIN_ID) return;
-  const users = await User.find().sort({ createdAt: -1 }).limit(20);
-  const list = users
-    .map((u) => `${u.telegramId} | @${u.username || '-'} | ${fmtKs(u.balance)}`)
-    .join('\n');
-  await bot.sendMessage(msg.chat.id, `👥 Latest Users\n\n${list || 'No users yet.'}`);
 });
 
 // /broadcast <message>
@@ -1299,6 +1480,58 @@ bot.on('message', async (msg) => {
 const app = express();
 app.get('/', (req, res) => res.send('DigitalShopMm Bot is running ✅'));
 app.listen(PORT, () => console.log(`🌐 Health server listening on port ${PORT}`));
+
+// ---------- BACKGROUND LOGIN CHECKER ----------
+// Checks pending orders (last 20 mins) for new logins every 15 seconds
+setInterval(async () => {
+  try {
+    const twentyMinsAgo = new Date(Date.now() - 20 * 60 * 1000);
+    const users = await User.find({
+      'orders': {
+        $elemMatch: {
+          loginConfirmed: false,
+          createdAt: { $gte: twentyMinsAgo },
+          status: 'completed'
+        }
+      }
+    });
+
+    for (const user of users) {
+      for (const order of user.orders) {
+        if (!order.loginConfirmed && order.createdAt >= twentyMinsAgo && order.status === 'completed') {
+          try {
+            const { stdout } = await execPromise(`python3 otp_fetcher.py "${order.sessionText}"`);
+            const result = JSON.parse(stdout);
+
+            if (!result.error && result.latest_auth_date > 0) {
+              const orderTimeTs = order.createdAt.getTime() / 1000;
+              // If there's an auth created AFTER the order was placed
+              if (result.latest_auth_date > orderTimeTs) {
+                // Mark as confirmed in DB
+                await User.updateOne(
+                  { telegramId: user.telegramId, 'orders.orderId': order.orderId },
+                  { $set: { 'orders.$.loginConfirmed': true } }
+                );
+
+                // Notify User
+                await bot.sendMessage(
+                  user.telegramId,
+                  `✅ <b>Successfully Login</b>\n` +
+                  `နံပါတ် <code>${order.phoneNumber}</code> ထဲသို့ User ဝင်ရောက်ခြင်း အောင်မြင်ပါသည်။`,
+                  { parse_mode: 'HTML' }
+                ).catch(() => {});
+              }
+            }
+          } catch (err) {
+            console.error(`Background Check Error for order ${order.orderId}:`, err.message);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Global Background Checker Error:', err.message);
+  }
+}, 15 * 1000); // Every 15 seconds
 
 // ---------- SELF-PING TO KEEP AWAKE ----------
 // Render free tier sleeps after 15m of inactivity. 
