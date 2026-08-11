@@ -299,7 +299,7 @@ async function buildProductCard(serviceKey, country, requestedPage) {
     : [
         [
           { 
-            text: '‼️➡️OUT OF STOCK ⬅️‼️', 
+            text: '‼️OUT OF STOCK', 
             callback_data: 'noop',
             icon_custom_emoji_id: EMOTE.OUT_OF_STOCK_1 // ‼️ premium emote
           }
@@ -580,7 +580,7 @@ bot.on('callback_query', async (query) => {
 
   try {
     if (data === 'opendeposit') {
-      // Balance စာသားအောက်က 💚 ငွေဖြည့်ရန် 💚 inline button ကိုနှိပ်ရင် ငွေဖြည့်နည်းလမ်း ရွေးခိုင်းမယ်
+      // Balance စာသားအောက်က ငွေဖြည့်ရန်🤑 inline button ကိုနှိပ်ရင် ငွေဖြည့်နည်းလမ်း ရွေးခိုင်းမယ်
       await bot.sendMessage(chatId, 'ငွေဖြည့်ရန် နည်းလမ်းရွေးချယ်ပါ 👇', {
         reply_markup: depositMethodKeyboard(),
       });
@@ -1015,7 +1015,7 @@ bot.onText(/^Balance$/, async (msg) => {
         // inline button label ထဲမှာ tg-emoji tag ထည့်ရင် premium emote မပြဘဲ
         // ရိုးရိုး unicode emoji ဘဲပေါ်တာကြောင့် Products flow ရဲ့ inline buttons
         // တွေလို icon_custom_emoji_id နဲ့ premium emote ID ကို တိုက်ရိုက်ချိတ်ပေးရတယ်
-        inline_keyboard: [[{ text: '🤑ငွေဖြည့်ရန်🤑', callback_data: 'opendeposit', icon_custom_emoji_id: EMOTE.DEPOSIT_NEW }]],
+        inline_keyboard: [[{ text: 'ငွေဖြည့်ရန်🤑', callback_data: 'opendeposit', icon_custom_emoji_id: EMOTE.DEPOSIT_NEW }]],
       },
     }
   );
@@ -1084,7 +1084,7 @@ async function paymentInfoText(method) {
   );
 }
 
-bot.onText(/^🤑ငွေဖြည့်ရန်🤑$/, async (msg) => {
+bot.onText(/^ငွေဖြည့်ရန်🤑$/, async (msg) => {
   await bot.sendMessage(msg.chat.id, 'ငွေဖြည့်ရန် နည်းလမ်းရွေးချယ်ပါ 👇', {
     reply_markup: depositMethodKeyboard(),
   });
