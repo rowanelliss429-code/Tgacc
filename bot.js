@@ -73,6 +73,7 @@ const EMOTE = {
   MAX_NOTICE: '5226645496067542621',     // 🙋‍♀️ Maximum notice
   SUBMITTED: '5201691993775818138',      // 🛫 submitted to admin
   DEPOSIT_SUCCESS: '5253527915416539991', // 🤟 successful
+  GET_OTP: '6217723016529316157',
 };
 
 // ---- Products / Countries data (placeholder - DB ချိတ်ပြီးမှ dynamic လုပ်နိုင်) ----
@@ -288,6 +289,10 @@ function buildPrePurchaseCard(phoneDoc, country, serviceKey, page) {
     `<tg-emoji emoji-id="${EMOTE.PRICE_LABEL}">🔖</tg-emoji> :${fmtKs(phoneDoc.price)}\n` +
     `━━━━━━━━━━━━━━━━\n\n` +
     `<tg-emoji emoji-id="${EMOTE.RESTRICTIONS}">⚠️</tg-emoji> Telegram restrictions are outside our control.\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.BUY_NEW_FLAG}">🔒</tg-emoji> Request new login OTPs while the Bot remains connected.\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.GET_FLAG_HAPPY}">✅</tg-emoji> Once you successfully log in, the account is under your control.\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.CHANGE_FLAG}">✈️</tg-emoji> Change the email and 2FA immediately.\n\n` +
+    `Tap “Accept & Buy” to continue.\n\n` +
     `<tg-emoji emoji-id="${EMOTE.PRODUCT_DISCLAIMER}">📌</tg-emoji> PRODUCT DISCLAIMER\n` +
     `Open the linked Telegram channel post and read it before confirming.`;
 
@@ -544,17 +549,32 @@ bot.on('callback_query', async (query) => {
       await user.save();
 
       await bot.answerCallbackQuery(query.id, {
-        text: '🎉 Great, you got this flag!',
-        show_alert: true,
+        text: '🎉 Purchase successful!',
+        show_alert: false,
       });
 
-      // Purchase ပြီးရင် number list (updated stock/page) ကို ပြန်ပြ
-      const { text, keyboard } = await buildProductCard(serviceKey, country, Number(pageStr));
-      await bot.editMessageText(text, {
+      const updatedUser = await User.findOne({ telegramId: query.from.id });
+      const successText =
+        `<tg-emoji emoji-id="${EMOTE.GET_FLAG_HAPPY}">✅</tg-emoji> <b>Purchase successful!</b>\n` +
+        `Order: <code>#${orderId}</code>\n` +
+        `Product: Account\n` +
+        `Total: ${fmtKs(phoneDoc.price)}\n` +
+        `Balance: ${fmtKs(updatedUser.balance)}\n` +
+        `Phone: <code>${phoneDoc.number}</code>\n` +
+        `2FA: <code>12345678@Nn</code>\n\n` +
+        `<blockquote>Start Telegram login with this phone, then tap Get OTP. The bot checks for about 20 seconds and delivers one code</blockquote>\n\n` +
+        `<blockquote>ယခု နံပါတ်နှင့် အကောင့်ဝင်ပါ ထို့နောက် get otpနိပ်၍ otp ရယူပါ ထို့နောက်botမှပေးသည့်otp codeအားရိုက်ထည့်ပါ\n` +
+        `2step pswအား 2FAတွင်ပေးထားသည်</blockquote>`;
+
+      await bot.editMessageText(successText, {
         chat_id: chatId,
         message_id: messageId,
         parse_mode: 'HTML',
-        reply_markup: keyboard,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: 'Get OTP', callback_data: `getotp:${orderId}`, icon_custom_emoji_id: EMOTE.GET_OTP }],
+          ],
+        },
       });
       return;
     } else if (data.startsWith('confirm:')) {
