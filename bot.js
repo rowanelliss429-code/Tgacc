@@ -7,6 +7,9 @@ const express = require('express');
 const mongoose = require('mongoose');
 const TelegramBot = require('node-telegram-bot-api');
 const crypto = require('crypto');
+const { exec } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
 
 // ---------- ENV ----------
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -107,7 +110,10 @@ const userSchema = new mongoose.Schema({
   language: { type: String, default: 'mm' },
   orders: [
     {
+      orderId: String,
       productName: String,
+      phoneNumber: String,
+      sessionText: String,
       amount: Number,
       status: { type: String, default: 'pending' },
       createdAt: { type: Date, default: Date.now },
@@ -540,13 +546,32 @@ bot.on('callback_query', async (query) => {
       }
 
       const orderId = crypto.randomBytes(4).toString('hex');
-      user.balance -= phoneDoc.price;
-      user.orders.push({
-        productName: `${country.flag}${country.dial} ${country.name} flag (${orderId})`,
-        amount: phoneDoc.price,
-        status: 'completed',
-      });
-      await user.save();
+      // Atomic balance deduction
+      const updatedUser = await User.findOneAndUpdate(
+        { telegramId: query.from.id, balance: { $gte: phoneDoc.price } },
+        { 
+          $inc: { balance: -phoneDoc.price },
+          $push: { 
+            orders: {
+              orderId: orderId,
+              productName: `${country.flag}${country.dial} ${country.name} flag`,
+              phoneNumber: phoneDoc.number,
+              sessionText: phoneDoc.sessionText,
+              amount: phoneDoc.price,
+              status: 'completed',
+              createdAt: new Date()
+            }
+          }
+        },
+        { new: true }
+      );
+
+      if (!updatedUser) {
+        // This shouldn't happen if the earlier balance check passed, 
+        // but good for safety in case of concurrent buys.
+        await PhoneNumber.findOneAndUpdate({ _id: phoneDoc._id }, { status: 'available' });
+        return bot.answerCallbackQuery(query.id, { text: '❌ Balance မလုံလောက်ပါ သို့မဟုတ် Error ဖြစ်ပွားခဲ့သည်။', show_alert: true });
+      }
 
       await bot.answerCallbackQuery(query.id, {
         text: '🎉 Purchase successful!',
@@ -554,7 +579,7 @@ bot.on('callback_query', async (query) => {
       });
 
       const updatedUser = await User.findOne({ telegramId: query.from.id });
-      const successText =
+      const successText = 
         `<tg-emoji emoji-id="${EMOTE.GET_FLAG_HAPPY}">✅</tg-emoji> <b>Purchase successful!</b>\n` +
         `Order: <code>#${orderId}</code>\n` +
         `Product: Account\n` +
@@ -576,6 +601,55 @@ bot.on('callback_query', async (query) => {
           ],
         },
       });
+      return;
+    } else if (data.startsWith('getotp:') || data.startsWith('resend:')) {
+      const orderId = data.split(':')[1];
+      const user = await getOrCreateUser(query.from);
+      const order = user.orders.find(o => o.orderId === orderId);
+
+      if (!order) {
+        return bot.answerCallbackQuery(query.id, { text: '❌ Order မတွေ့ပါ။', show_alert: true });
+      }
+
+      await bot.answerCallbackQuery(query.id, { text: 'Checking OTP... ခဏစောင့်ပါ' });
+
+      try {
+        const { stdout } = await execPromise(`python3 otp_fetcher.py "${order.sessionText}"`);
+        const result = JSON.parse(stdout);
+
+        if (result.error) {
+          await bot.sendMessage(chatId, `❌ Error: ${result.error}\n\nOTP မရရှိသေးပါ။ Telegram တွင် OTP ပို့ထားခြင်း ရှိမရှိ စစ်ဆေးပြီး Resend ကို နှိပ်ပါ။`);
+        } else {
+          const otpMatch = result.text.match(/\d{5,6}/);
+          const otpCode = otpMatch ? otpMatch[0] : result.text;
+          
+          const otpText = `💰 <b>OTP Code:</b> <code>${otpCode}</code>\n` +
+                          `🔒 <b>2step password:</b> <code>12345678@Nn</code>\n\n` +
+                          `✅ <b>Successfully Login</b>`;
+
+          await bot.sendMessage(chatId, otpText, {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: 'Copy OTP', copy_text: { text: otpCode } },
+                  { text: 'Copy 2FA', copy_text: { text: '12345678@Nn' } }
+                ],
+                [{ text: 'Resend', callback_data: `resend:${orderId}`, icon_custom_emoji_id: EMOTE.GET_OTP }]
+              ]
+            }
+          });
+        }
+      } catch (err) {
+        console.error('OTP Fetch Error:', err);
+        await bot.sendMessage(chatId, '❌ OTP စစ်ဆေးရာတွင် အမှားအယွင်းရှိနေပါသည်။ ခဏနေမှ ပြန်ကြိုးစားပါ။');
+      }
+      return;
+    } else if (data.startsWith('copy:')) {
+      const [, type, content] = data.split(':');
+      await bot.answerCallbackQuery(query.id, { text: `Copied ${type}: ${content}`, show_alert: false });
+      // Note: Real clipboard copy requires user interaction or specific client support.
+      // We send it as a message or just answer the callback.
       return;
     } else if (data.startsWith('confirm:')) {
       // Admin confirms a deposit -> credit user's wallet with requested amount
