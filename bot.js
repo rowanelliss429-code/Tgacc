@@ -1300,4 +1300,19 @@ const app = express();
 app.get('/', (req, res) => res.send('DigitalShopMm Bot is running ✅'));
 app.listen(PORT, () => console.log(`🌐 Health server listening on port ${PORT}`));
 
+// ---------- SELF-PING TO KEEP AWAKE ----------
+// Render free tier sleeps after 15m of inactivity. 
+// This pings the bot's own URL every 5 minutes to stay awake.
+setInterval(() => {
+  const url = process.env.RENDER_EXTERNAL_URL;
+  if (url) {
+    const lib = url.startsWith('https') ? require('https') : require('http');
+    lib.get(url, (res) => {
+      console.log(`Self-ping to ${url} successful: ${res.statusCode}`);
+    }).on('error', (err) => {
+      console.error('Self-ping failed:', err.message);
+    });
+  }
+}, 5 * 60 * 1000); // Every 5 minutes
+
 console.log('🤖 Bot started (polling mode)...');

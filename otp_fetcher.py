@@ -2,7 +2,8 @@ import asyncio
 import sys
 import json
 import re
-from telethon import TelegramClient
+from datetime import datetime, timedelta, timezone
+from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 
 API_ID = 17349
@@ -16,31 +17,42 @@ async def fetch_otp_and_check_login(session_str):
         if not await client.is_user_authorized():
             return {"error": "Session is invalid or expired"}
             
+        # 1. Fetch latest OTP message from 777000
         target_id = 777000
-        # Get latest 5 messages to check for both OTP and New Login notification
         messages = await client.get_messages(target_id, limit=5)
         
-        if not messages:
-            return {"error": "No messages found from Telegram"}
-            
         otp_data = None
+        if messages:
+            for msg in messages:
+                text = msg.text
+                if not otp_data and re.search(r'\b\d{5,6}\b', text):
+                    otp_data = {
+                        "text": text,
+                        "date": str(msg.date)
+                    }
+                    break
+
+        # 2. Check for new authorizations (active devices)
         new_login_detected = False
-        
-        for msg in messages:
-            text = msg.text
-            # Look for OTP (usually 5-6 digits)
-            if not otp_data and re.search(r'\b\d{5,6}\b', text):
-                otp_data = {
-                    "text": text,
-                    "date": str(msg.date)
-                }
+        try:
+            authorizations = await client(functions.account.GetAuthorizationsRequest())
+            # A new login is detected if there's more than 1 session 
+            # OR if a session was created very recently (e.g., in the last 10 minutes)
+            now = datetime.now(timezone.utc)
+            for auth in authorizations.authorizations:
+                # If the authorization is not the current one and was created recently
+                if not auth.current:
+                    auth_date = auth.date
+                    if now - auth_date < timedelta(minutes=10):
+                        new_login_detected = True
+                        break
             
-            # Look for "New login" notification
-            if "New login" in text or "Login notification" in text:
-                # Check if the login happened recently (e.g., within last 5 minutes)
-                # For simplicity, we just mark if it exists in the latest messages
+            # Also, if total sessions > 1, it's highly likely a user has logged in
+            if not new_login_detected and len(authorizations.authorizations) > 1:
                 new_login_detected = True
-        
+        except Exception as auth_err:
+            print(f"Auth check error: {auth_err}", file=sys.stderr)
+
         return {
             "otp": otp_data,
             "new_login": new_login_detected
