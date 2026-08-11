@@ -578,7 +578,6 @@ bot.on('callback_query', async (query) => {
         show_alert: false,
       });
 
-      const updatedUser = await User.findOne({ telegramId: query.from.id });
       const successText = 
         `<tg-emoji emoji-id="${EMOTE.GET_FLAG_HAPPY}">✅</tg-emoji> <b>Purchase successful!</b>\n` +
         `Order: <code>#${orderId}</code>\n` +
