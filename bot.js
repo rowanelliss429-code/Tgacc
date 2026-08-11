@@ -182,7 +182,6 @@ function mainMenuKeyboard() {
         ['▪️ Products'],
         ['📦 My Orders', '👤 Account'],
         ['👛 Balance', '👋 Join Channel'],
-        ['💚 ငွေဖြည့်ရန် 💚'],
         ['🌐 Language', '🎁 Redeem Code'],
       ],
       resize_keyboard: true,
@@ -370,7 +369,14 @@ bot.on('callback_query', async (query) => {
   const messageId = query.message.message_id;
 
   try {
-    if (data.startsWith('deposit:')) {
+    if (data === 'opendeposit') {
+      // Balance စာသားအောက်က 💚 ငွေဖြည့်ရန် 💚 inline button ကိုနှိပ်ရင် ငွေဖြည့်နည်းလမ်း ရွေးခိုင်းမယ်
+      await bot.sendMessage(chatId, 'ငွေဖြည့်ရန် နည်းလမ်းရွေးချယ်ပါ 👇', {
+        reply_markup: depositMethodKeyboard(),
+      });
+      await bot.answerCallbackQuery(query.id);
+      return;
+    } else if (data.startsWith('deposit:')) {
       // KBZ Pay / Wave Pay ရွေးလိုက်ရင် - account info ပြပြီး screenshot တောင်း
       const method = data.split(':')[1]; // kbz | wave
       const text = await paymentInfoText(method);
@@ -611,9 +617,13 @@ bot.onText(/^👛 Balance$/, async (msg) => {
   await bot.sendMessage(
     msg.chat.id,
     `<tg-emoji emoji-id="${EMOTE.BALANCE}">👛</tg-emoji><b>Wallet Balance</b>\n\n` +
-      `လက်ရှိ လက်ကျန်ငွေ: ${fmtKs(user.balance)}\n\n` +
-      `ငွေဖြည့်ရန် Support: @${SUPPORT_USERNAME} ကို ဆက်သွယ်ပါ။`,
-    { parse_mode: 'HTML' }
+      `လက်ရှိ လက်ကျန်ငွေ: ${fmtKs(user.balance)}`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [[{ text: '💚 ငွေဖြည့်ရန် 💚', callback_data: 'opendeposit' }]],
+      },
+    }
   );
 });
 
