@@ -130,7 +130,7 @@ async function fireText(pattern) {
   check(
     'Balance inline button uses new premium emote 5386757680679377085',
     balanceMsg &&
-      balanceMsg.extra.reply_markup.inline_keyboard[0][0].text.includes('5386757680679377085') &&
+      balanceMsg.extra.reply_markup.inline_keyboard[0][0].icon_custom_emoji_id === '5386757680679377085' &&
       balanceMsg.extra.reply_markup.inline_keyboard[0][0].text.includes('ငွေဖြည့်ရန်')
   );
   check('Balance text contains လက်ရှိ လက်ကျန်ငွေ', balanceMsg && balanceMsg.text.includes('လက်ရှိ လက်ကျန်ငွေ'));

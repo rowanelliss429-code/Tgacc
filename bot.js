@@ -301,7 +301,7 @@ async function buildProductCard(serviceKey, country, requestedPage) {
           { 
             text: '‼️➡️OUT OF STOCK ⬅️‼️', 
             callback_data: 'noop',
-            icon_custom_emoji_id: EMOTE.OUT_OF_STOCK_1 // ‼️
+            icon_custom_emoji_id: EMOTE.OUT_OF_STOCK_1 // ‼️ premium emote
           }
         ]
       ];
@@ -1012,7 +1012,10 @@ bot.onText(/^Balance$/, async (msg) => {
     {
       parse_mode: 'HTML',
       reply_markup: {
-        inline_keyboard: [[{ text: '<tg-emoji emoji-id="5386757680679377085">🤑</tg-emoji>ငွေဖြည့်ရန်🤑', parse_mode: 'HTML', callback_data: 'opendeposit' }]],
+        // inline button label ထဲမှာ tg-emoji tag ထည့်ရင် premium emote မပြဘဲ
+        // ရိုးရိုး unicode emoji ဘဲပေါ်တာကြောင့် Products flow ရဲ့ inline buttons
+        // တွေလို icon_custom_emoji_id နဲ့ premium emote ID ကို တိုက်ရိုက်ချိတ်ပေးရတယ်
+        inline_keyboard: [[{ text: '🤑ငွေဖြည့်ရန်🤑', callback_data: 'opendeposit', icon_custom_emoji_id: EMOTE.DEPOSIT_NEW }]],
       },
     }
   );
