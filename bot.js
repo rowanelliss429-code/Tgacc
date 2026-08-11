@@ -192,14 +192,17 @@ async function buildProductCard(serviceKey, country, requestedPage) {
 
   const price = PRICES[country.code] || 0;
 
+  // Label column ကို width တူအောင် pad ထားလို့ colon တွေ တန်းတူ ကျချိန်ညှိပါ
+  const padLabel = (label) => label.padEnd(10, ' ');
+
   const text =
     `<tg-emoji emoji-id="${EMOTE.CHOOSE_FLAG}">➡️</tg-emoji>CHOOSE YOUR TELEGRAM ACCOUNT\n` +
     `━━━━━━━━━━━━━━━━\n` +
-    `<tg-emoji emoji-id="${EMOTE.TYPE_LABEL}">🏷</tg-emoji><b>Type:</b> ${country.flag}\n\n` +
-    `🛍️<b>Product:</b> Telegram Account\n\n` +
-    `<tg-emoji emoji-id="${EMOTE.PRICE_LABEL}">🔖</tg-emoji><b>Price:</b> ${fmtKs(price)}\n\n` +
-    `<tg-emoji emoji-id="${EMOTE.INSTOCK_LABEL}">📦</tg-emoji><b>In stock:</b> ${total} accounts\n\n` +
-    `<tg-emoji emoji-id="${EMOTE.PAGE_LABEL}">📝</tg-emoji>Page ${page} of ${totalPages}\n` +
+    `<tg-emoji emoji-id="${EMOTE.TYPE_LABEL}">🏷</tg-emoji> <b>${padLabel('Type')}:</b> ${country.flag}Account\n\n` +
+    `🛍️ <b>${padLabel('Product')}:</b> Telegram Account\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.PRICE_LABEL}">🔖</tg-emoji> <b>${padLabel('Price')}:</b> ${fmtKs(price)}\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.INSTOCK_LABEL}">📦</tg-emoji> <b>${padLabel('In stock')}:</b> ${total} accounts\n\n` +
+    `<tg-emoji emoji-id="${EMOTE.PAGE_LABEL}">📝</tg-emoji> Page ${page} of ${totalPages}\n` +
     `━━━━━━━━━━━━━━━━\n` +
     `<tg-emoji emoji-id="${EMOTE.TAP_FLAG}">👇</tg-emoji><b>Tap a phone number below to continue.</b>`;
 
