@@ -610,21 +610,35 @@ bot.on('callback_query', async (query) => {
         return bot.answerCallbackQuery(query.id, { text: '❌ Order မတွေ့ပါ။', show_alert: true });
       }
 
-      await bot.answerCallbackQuery(query.id, { text: 'Checking OTP... ခဏစောင့်ပါ' });
+      // Send waiting message instead of notification
+      const waitingMsg = await bot.sendMessage(chatId, 'OTP ပို့နေပါတယ် 1-20 seconds စောင့်ပေးပါ.....');
+      await bot.answerCallbackQuery(query.id);
 
       try {
         const { stdout } = await execPromise(`python3 otp_fetcher.py "${order.sessionText}"`);
         const result = JSON.parse(stdout);
 
+        // Delete waiting message
+        await bot.deleteMessage(chatId, waitingMsg.message_id).catch(() => {});
+
         if (result.error) {
           await bot.sendMessage(chatId, `❌ Error: ${result.error}\n\nOTP မရရှိသေးပါ။ Telegram တွင် OTP ပို့ထားခြင်း ရှိမရှိ စစ်ဆေးပြီး Resend ကို နှိပ်ပါ။`);
+        } else if (!result.otp) {
+          await bot.sendMessage(chatId, `OTP မရရှိသေးပါ။ Telegram တွင် OTP ပို့ထားခြင်း ရှိမရှိ စစ်ဆေးပြီး Resend ကို နှိပ်ပါ။`, {
+            reply_markup: {
+              inline_keyboard: [[{ text: 'Resend', callback_data: `resend:${orderId}`, icon_custom_emoji_id: EMOTE.GET_OTP }]]
+            }
+          });
         } else {
-          const otpMatch = result.text.match(/\d{5,6}/);
-          const otpCode = otpMatch ? otpMatch[0] : result.text;
+          const otpMatch = result.otp.text.match(/\d{5,6}/);
+          const otpCode = otpMatch ? otpMatch[0] : result.otp.text;
           
-          const otpText = `💰 <b>OTP Code:</b> <code>${otpCode}</code>\n` +
-                          `🔒 <b>2step password:</b> <code>12345678@Nn</code>\n\n` +
-                          `✅ <b>Successfully Login</b>`;
+          let otpText = `💰 <b>OTP Code:</b> <code>${otpCode}</code>\n` +
+                        `🔒 <b>2step password:</b> <code>12345678@Nn</code>`;
+          
+          if (result.new_login) {
+            otpText += `\n\n✅ <b>Successfully Login</b>`;
+          }
 
           await bot.sendMessage(chatId, otpText, {
             parse_mode: 'HTML',
@@ -641,6 +655,7 @@ bot.on('callback_query', async (query) => {
         }
       } catch (err) {
         console.error('OTP Fetch Error:', err);
+        await bot.deleteMessage(chatId, waitingMsg.message_id).catch(() => {});
         await bot.sendMessage(chatId, '❌ OTP စစ်ဆေးရာတွင် အမှားအယွင်းရှိနေပါသည်။ ခဏနေမှ ပြန်ကြိုးစားပါ။');
       }
       return;
