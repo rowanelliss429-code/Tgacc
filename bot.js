@@ -21,6 +21,8 @@ const ADMIN_ID = Number(process.env.ADMIN_ID);
 const SUPPORT_USERNAME = process.env.SUPPORT_USERNAME || 'nostalg14';
 const CHANNEL_LINK = process.env.CHANNEL_LINK || 'https://t.me/your_channel';
 const PORT = process.env.PORT || 3000;
+const API_ID = parseInt(process.env.API_ID) || 17349;
+const API_HASH = process.env.API_HASH || '344583e45741c457fe1862106095a5eb';
 
 if (!BOT_TOKEN || !MONGO_URI || !ADMIN_ID) {
   console.error('BOT_TOKEN, MONGO_URI, ADMIN_ID တွေကို .env ထဲမှာ ဖြည့်ပါ');
