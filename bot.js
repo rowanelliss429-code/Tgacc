@@ -264,12 +264,15 @@ async function processCommentOrder(orderId) {
       const client = new TelegramClient(new StringSession(acc.sessionText), API_ID, API_HASH, { connectionRetries: 3 });
       await client.connect();
 
-      const channelName = order.postLink.split('/').slice(-2, -1)[0];
-      const postMsgId = parseInt(order.postLink.split('/').pop().split('?')[0]);
+      let channelName = order.postLink.split('/').slice(-2, -1)[0];
+      let postMsgId = parseInt(order.postLink.split('/').pop().split('?')[0]);
+      
+      // If the link already contains a comment ID, use it directly
+      const urlParams = new URLSearchParams(order.postLink.split('?')[1] || '');
+      const directCommentId = urlParams.get('comment');
 
       let targetChat = channelName;
       let replyToMsgId = postMsgId;
-      let threadMsgId = null;
 
       try {
         // Step 1: Get discussion info to find the linked group and the thread header message
@@ -279,14 +282,13 @@ async function processCommentOrder(orderId) {
         }));
 
         if (discussion && discussion.messages && discussion.messages.length > 0) {
-          // The first message in the response is the one we must reply to in the group
+          // The first message in the response is the root of the thread in the group
           const discMsg = discussion.messages[0];
           replyToMsgId = discMsg.id;
-          threadMsgId = discMsg.id; // This is the root of the comment thread
           
-          // Find the group (linked chat) in the chats list
+          // Find the group (linked chat)
           const linkedChat = discussion.chats.find(c => 
-            c.id.toString() === discMsg.peerId.channelId.toString() || 
+            c.id.toString() === discMsg.peerId.channelId?.toString() || 
             c.id.toString() === discMsg.peerId.chatId?.toString()
           );
           
@@ -297,6 +299,11 @@ async function processCommentOrder(orderId) {
       } catch (e) {
         console.log("GetDiscussionMessage failed:", e.message);
       }
+      
+      // If we have a direct comment ID from the link, it might be more accurate
+      if (directCommentId) {
+        replyToMsgId = parseInt(directCommentId);
+      }
 
       // Step 2: Ensure we are in the group
       try {
@@ -304,12 +311,10 @@ async function processCommentOrder(orderId) {
       } catch (e) {}
       await new Promise(r => setTimeout(r, 3000));
 
-      // Step 3: Post the comment using the correct thread parameters
-      // To appear in the "Comments" section, we MUST reply to the forwarded message in the group
+      // Step 3: Post the comment
       await client.sendMessage(targetChat, {
         message: commentText,
         replyTo: replyToMsgId,
-        // commentTo: threadMsgId // Some libraries use this, but replyTo + correct target is usually enough
       });
 
       await client.disconnect();
