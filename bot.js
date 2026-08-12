@@ -711,17 +711,24 @@ bot.on('message', async (msg) => {
       if (qty > state.stockCount) return bot.sendMessage(chatId, `❌ Maximum ${state.stockCount}.`);
 
       adminState.set(userId, { ...state, step: 'awaiting_comment_link', quantity: qty });
-      return bot.sendMessage(chatId, '🔗 <b>Comment ထည့်မည့် Channel Post Link ပို့ပေးပါ...</b>', { parse_mode: 'HTML' });
+      return bot.sendMessage(chatId, '🔗 <b>Comment ထည့်မည့် Channel Post Link မှComment တစ်ခုLinkအားcopyယူပို့ပေးပါ......</b>', { parse_mode: 'HTML' });
     }
 
     if (state.step === 'awaiting_comment_link') {
       const link = text.trim();
       const channelPostRegex = /https:\/\/t\.me\/[a-zA-Z0-9_]+\/\d+/;
       const personalRegex = /https:\/\/t\.me\/[a-zA-Z0-9_]+$/;
+      const commentLinkRegex = /\?comment=\d+/;
 
       if (personalRegex.test(link) && !channelPostRegex.test(link)) {
         return bot.sendMessage(chatId, '❌ Channel Link သာ ပို့ပေးပါ (Personal account link မရပါ)။');
       }
+      
+      // Force user to provide a link with ?comment=
+      if (!commentLinkRegex.test(link)) {
+        return bot.sendMessage(chatId, '❌ Channel post link အောက်မှရေးထားသော comment link တစ်ခုကိုသာ copy ယူပို့ပါ');
+      }
+      
       if (!channelPostRegex.test(link)) {
         return bot.sendMessage(chatId, '❌ Link ပုံစံ မှားယွင်းနေပါသည်။ Link အမှန် ပြန်ပို့ပေးပါ။');
       }
