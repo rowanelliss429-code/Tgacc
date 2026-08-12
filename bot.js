@@ -267,53 +267,49 @@ async function processCommentOrder(orderId) {
       const channelName = order.postLink.split('/').slice(-2, -1)[0];
       const postMsgId = parseInt(order.postLink.split('/').pop().split('?')[0]);
 
-      // Step 1: Get the discussion chat and the correct message ID to reply to
       let targetChat = channelName;
       let replyToMsgId = postMsgId;
+      let threadMsgId = null;
 
       try {
-        // Use GetDiscussionMessage to find the linked chat and the forwarded message ID
+        // Step 1: Get discussion info to find the linked group and the thread header message
         const discussion = await client.invoke(new Api.messages.GetDiscussionMessage({
           peer: channelName,
           msgId: postMsgId
         }));
 
         if (discussion && discussion.messages && discussion.messages.length > 0) {
-          // The first message in discussion.messages is the forwarded post in the group
+          // The first message in the response is the one we must reply to in the group
           const discMsg = discussion.messages[0];
           replyToMsgId = discMsg.id;
+          threadMsgId = discMsg.id; // This is the root of the comment thread
           
-          // The linked chat (group) is in discussion.chats
-          const linkedChat = discussion.chats.find(c => c.id.toString() === discMsg.peerId.channelId.toString());
+          // Find the group (linked chat) in the chats list
+          const linkedChat = discussion.chats.find(c => 
+            c.id.toString() === discMsg.peerId.channelId.toString() || 
+            c.id.toString() === discMsg.peerId.chatId?.toString()
+          );
+          
           if (linkedChat) {
             targetChat = linkedChat;
           }
         }
       } catch (e) {
-        console.log("GetDiscussionMessage failed, trying fallback:", e.message);
-        // Fallback: Try GetFullChannel to at least find the linked chat ID
-        try {
-          const fullChannel = await client.invoke(new Api.channels.GetFullChannel({ channel: channelName }));
-          if (fullChannel.fullChat.linkedChatId) {
-            targetChat = await client.getEntity(fullChannel.fullChat.linkedChatId);
-          }
-        } catch (innerE) {
-          console.log("Fallback detection also failed:", innerE.message);
-        }
+        console.log("GetDiscussionMessage failed:", e.message);
       }
 
-      // Step 2: Join and Post
-      // We always try to join first if it's a group we might not be in
+      // Step 2: Ensure we are in the group
       try {
         await client.invoke(new Api.channels.JoinChannel({ channel: targetChat })).catch(() => {});
       } catch (e) {}
-
-      // Wait a bit after join attempt
       await new Promise(r => setTimeout(r, 3000));
 
+      // Step 3: Post the comment using the correct thread parameters
+      // To appear in the "Comments" section, we MUST reply to the forwarded message in the group
       await client.sendMessage(targetChat, {
         message: commentText,
         replyTo: replyToMsgId,
+        // commentTo: threadMsgId // Some libraries use this, but replyTo + correct target is usually enough
       });
 
       await client.disconnect();
