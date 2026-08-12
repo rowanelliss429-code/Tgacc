@@ -264,24 +264,55 @@ async function processCommentOrder(orderId) {
       const client = new TelegramClient(new StringSession(acc.sessionText), API_ID, API_HASH, { connectionRetries: 3 });
       await client.connect();
 
-      const target = order.postLink.split('/').slice(-2, -1)[0];
+      const channelName = order.postLink.split('/').slice(-2, -1)[0];
       const postMsgId = parseInt(order.postLink.split('/').pop());
 
-      // Try to comment directly first
+      // Step 1: Get the discussion chat for the channel post
+      let targetChat = channelName;
+      let replyToMsgId = postMsgId;
+
       try {
-        await client.sendMessage(target, {
+        const fullChannel = await client.invoke(new Api.channels.GetFullChannel({ channel: channelName }));
+        if (fullChannel.fullChat.linkedChatId) {
+          // It has a linked discussion group
+          const linkedChat = await client.getEntity(fullChannel.fullChat.linkedChatId);
+          targetChat = linkedChat;
+          
+          // In discussion groups, we need to reply to the forwarded message from the channel
+          // The message ID in the group is usually different, so we search for it
+          const messages = await client.invoke(new Api.messages.GetHistory({
+            peer: linkedChat,
+            limit: 50
+          }));
+          
+          const discussionMsg = messages.messages.find(m => 
+            m.fwdFrom && m.fwdFrom.fromId && 
+            m.fwdFrom.fromId.channelId && 
+            m.fwdFrom.savedFromMsgId === postMsgId
+          );
+          
+          if (discussionMsg) {
+            replyToMsgId = discussionMsg.id;
+          }
+        }
+      } catch (e) {
+        console.log("Discussion detection failed, falling back to direct post:", e.message);
+      }
+
+      // Step 2: Join and Post
+      try {
+        await client.sendMessage(targetChat, {
           message: commentText,
-          replyTo: postMsgId,
+          replyTo: replyToMsgId,
         });
       } catch (postErr) {
-        // If direct post fails, try joining first
-        await client.invoke(new Api.channels.JoinChannel({ channel: target }));
-        // Wait 5s after join
-        await new Promise(r => setTimeout(r, 5000));
+        // If post fails, join the chat first
+        await client.invoke(new Api.channels.JoinChannel({ channel: targetChat })).catch(() => {});
+        await new Promise(r => setTimeout(r, 5000)); // Wait 5s after join
         
-        await client.sendMessage(target, {
+        await client.sendMessage(targetChat, {
           message: commentText,
-          replyTo: postMsgId,
+          replyTo: replyToMsgId,
         });
       }
 
