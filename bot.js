@@ -998,8 +998,17 @@ bot.on('callback_query', async (query) => {
       }
     } else if (data.startsWith('cmcat:')) {
       const gender = data.split(':')[1];
+      const userDoc = await getOrCreateUser(query.from);
+      const minPrice = COMMENT_CATEGORIES[gender].price;
+
+      if (userDoc.balance < minPrice) {
+        return bot.answerCallbackQuery(query.id, { 
+          text: `❌ Balance မလုံလောက်ပါ။ အနည်းဆုံး ${fmtKs(minPrice)} ရှိမှ ဝယ်ယူနိုင်ပါသည်။ ငွေဖြည့်သွင်းပြီးမှ ဆက်လက်လုပ်ဆောင်ပါ။`, 
+          show_alert: true 
+        });
+      }
+
       const stockCount = await CommentAccount.countDocuments({ gender, status: 'active' });
-      
       if (stockCount === 0) {
         return bot.answerCallbackQuery(query.id, { text: '❌ လက်ရှိတွင် အကောင့်များ ပြတ်လပ်နေပါသည်။', show_alert: true });
       }
