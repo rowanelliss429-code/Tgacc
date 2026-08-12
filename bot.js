@@ -264,19 +264,26 @@ async function processCommentOrder(orderId) {
       const client = new TelegramClient(new StringSession(acc.sessionText), API_ID, API_HASH, { connectionRetries: 3 });
       await client.connect();
 
-      // Join Channel
       const target = order.postLink.split('/').slice(-2, -1)[0];
-      await client.invoke(new Api.channels.JoinChannel({ channel: target })).catch(() => {});
-      
-      // Wait 5s after join
-      await new Promise(r => setTimeout(r, 5000));
-
-      // Post Comment
       const postMsgId = parseInt(order.postLink.split('/').pop());
-      await client.sendMessage(target, {
-        message: commentText,
-        replyTo: postMsgId,
-      });
+
+      // Try to comment directly first
+      try {
+        await client.sendMessage(target, {
+          message: commentText,
+          replyTo: postMsgId,
+        });
+      } catch (postErr) {
+        // If direct post fails, try joining first
+        await client.invoke(new Api.channels.JoinChannel({ channel: target }));
+        // Wait 5s after join
+        await new Promise(r => setTimeout(r, 5000));
+        
+        await client.sendMessage(target, {
+          message: commentText,
+          replyTo: postMsgId,
+        });
+      }
 
       await client.disconnect();
 
@@ -672,7 +679,7 @@ bot.on('message', async (msg) => {
       if (qty > state.stockCount) return bot.sendMessage(chatId, `❌ Maximum ${state.stockCount}.`);
 
       adminState.set(userId, { ...state, step: 'awaiting_comment_link', quantity: qty });
-      return bot.sendMessage(chatId, '🔗 <b>Comment ထည့်မည့် Channel Post Link ပို့ပေးပါ...</b>\n(ဥပမာ - https://t.me/kayzinhnin/8573)', { parse_mode: 'HTML' });
+      return bot.sendMessage(chatId, '🔗 <b>Comment ထည့်မည့် Channel Post Link ပို့ပေးပါ...</b>', { parse_mode: 'HTML' });
     }
 
     if (state.step === 'awaiting_comment_link') {
@@ -688,11 +695,16 @@ bot.on('message', async (msg) => {
       }
 
       adminState.set(userId, { ...state, step: 'awaiting_comment_texts', postLink: link });
+      
+      let exampleLines = "";
+      for (let i = 1; i <= Math.min(state.quantity, 2); i++) {
+        exampleLines += `${i}. ${i === 1 ? 'Hello' : 'Test'}\n`;
+      }
+
       const helpMsg = 
         `✍️ <b>Custom Comment များ ပို့ပေးပါ</b>\n\n` +
         `အရေအတွက် <b>${state.quantity}</b> ခုအတွက် အောက်ပါအတိုင်း နံပါတ်စဉ်တပ်ပြီး ပို့ပေးပါ -\n` +
-        `1. Hello\n` +
-        `2. Test\n\n` +
+        `${exampleLines}\n` +
         `<i>(Bot မှ နံပါတ်စဉ်များကို ဖယ်ရှားပြီး စာသားကိုသာ မန့်ပေးမည်ဖြစ်သည်)</i>`;
       return bot.sendMessage(chatId, helpMsg, { parse_mode: 'HTML' });
     }
