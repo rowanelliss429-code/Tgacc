@@ -246,8 +246,15 @@ async function processCommentOrder(orderId) {
   const order = await CommentOrder.findOne({ orderId });
   if (!order) return;
 
-  const accounts = await CommentAccount.find({ gender: order.type, status: 'active' }).limit(order.quantity);
   const isNotiOn = (await Config.findOne({ key: 'admin_noti' }))?.value;
+  const allAccounts = await CommentAccount.find({ gender: order.type, status: 'active' });
+  if (allAccounts.length === 0) {
+    if (isNotiOn) await bot.sendMessage(ADMIN_ID, `❌ Comment Order #${orderId} failed: No active accounts found.`);
+    return;
+  }
+  
+  // Use each account only once for one comment
+  const accounts = allAccounts.slice(0, order.quantity);
 
   const delays = [2 * 60 * 1000, 1 * 60 * 1000, 30 * 1000]; // 2m, 1m, 30s
   let delayIdx = 0;
@@ -326,6 +333,15 @@ async function processCommentOrder(orderId) {
       if (isNotiOn) {
         await bot.sendMessage(ADMIN_ID, `📝 <b>Comment Progress (#${orderId})</b>\nAcc: ${acc.phoneNumber}\nMsg: ${commentText}\nStatus: Success`, { parse_mode: 'HTML' });
       }
+
+      // If this was the last comment, notify user with summary
+      if (order.processedCount === order.quantity) {
+        const summaryMsg = 
+          `<tg-emoji emoji-id="${EMOTE.DONE_COMMENT}">📱</tg-emoji> <b>Done Comments</b>\n\n` +
+          `<tg-emoji emoji-id="${EMOTE.POST_LINK_ICON}">📢</tg-emoji> <b>Post Link:</b> ${order.postLink}\n\n` +
+          `<b>Comments Posted:</b>\n${order.comments.map((c, idx) => `${idx + 1}. ${c}`).join('\n')}`;
+        await bot.sendMessage(order.userId, summaryMsg, { parse_mode: 'HTML', disable_web_page_preview: true });
+      }
     } catch (err) {
       order.logs.push(`❌ [${acc.phoneNumber}] Fail: ${err.message}`);
       await order.save();
@@ -399,15 +415,16 @@ function commentCategoryKeyboard() {
 }
 
 function countrySelectKeyboard(serviceKey) {
-  return {
-    inline_keyboard: COUNTRIES.map((c) => [
-      {
-        text: `${c.dial} ${c.name}${c.labelSuffix} ${PRICES[c.code]}ks`,
-        callback_data: `country:${serviceKey}:${c.code}`,
-        icon_custom_emoji_id: c.emoteId,
-      },
-    ]),
-  };
+  const rows = COUNTRIES.map((c) => [
+    {
+      text: `${c.dial} ${c.name}${c.labelSuffix} ${PRICES[c.code]}ks`,
+      callback_data: `country:${serviceKey}:${c.code}`,
+      icon_custom_emoji_id: c.emoteId,
+    },
+  ]);
+  // Add Back button to return to service selection
+  rows.push([{ text: 'Back', callback_data: 'back_to_services', icon_custom_emoji_id: EMOTE.BACK }]);
+  return { inline_keyboard: rows };
 }
 
 // Product card + phone-number BUTTONS, paginated NUMBERS_PER_PAGE at a time.
@@ -462,15 +479,26 @@ async function buildProductCard(serviceKey, country, requestedPage) {
       ];
 
   const navRow = [];
-  if (page > 1) navRow.push({ text: 'Back', callback_data: `page:${serviceKey}:${country.code}:${page - 1}`, icon_custom_emoji_id: EMOTE.BACK });
-  if (page < totalPages) navRow.push({ text: 'Next', callback_data: `page:${serviceKey}:${country.code}:${page + 1}`, icon_custom_emoji_id: EMOTE.CHOOSE_FLAG });
+  // Back button (left) and Next button (right) side-by-side
+  if (page > 1) {
+    navRow.push({ text: 'Back', callback_data: `page:${serviceKey}:${country.code}:${page - 1}`, icon_custom_emoji_id: EMOTE.BACK });
+  } else {
+    // If on page 1, show Back button to return to country selection
+    navRow.push({ text: 'Back', callback_data: `svc:${serviceKey}`, icon_custom_emoji_id: EMOTE.BACK });
+  }
+
+  if (page < totalPages) {
+    navRow.push({ text: 'Next', callback_data: `page:${serviceKey}:${country.code}:${page + 1}`, icon_custom_emoji_id: EMOTE.CHOOSE_FLAG });
+  }
+  
   if (navRow.length) rows.push(navRow);
 
   return { text, keyboard: { inline_keyboard: rows } };
 }
 
 // Pre-purchase confirmation card ("BEFORE YOU BUY")
-function buildPrePurchaseCard(phoneDoc, country, serviceKey, page) {
+async function buildPrePurchaseCard(phoneDoc, country, serviceKey, page) {
+  const disclaimerLink = (await Config.findOne({ key: 'disclaimer_link' }))?.value || CHANNEL_LINK;
   const text =
     `<tg-emoji emoji-id="${EMOTE.BEFORE_BUY}">🔥</tg-emoji>BEFORE YOU BUY\n` +
     `━━━━━━━━━━━━━━━━\n\n` +
@@ -489,7 +517,7 @@ function buildPrePurchaseCard(phoneDoc, country, serviceKey, page) {
 
   const keyboard = {
     inline_keyboard: [
-      [{ text: 'Read Disclaimer', url: CHANNEL_LINK, icon_custom_emoji_id: EMOTE.READ_DISCLAIMER }],
+      [{ text: 'Read Disclaimer', url: disclaimerLink, icon_custom_emoji_id: EMOTE.READ_DISCLAIMER }],
       [{ text: 'Accept & Buy', callback_data: `accept:${phoneDoc._id}:${serviceKey}:${country.code}:${page}`, icon_custom_emoji_id: EMOTE.GET_FLAG_HAPPY }],
       [{ text: 'Back', callback_data: `back:${serviceKey}:${country.code}:${page}`, icon_custom_emoji_id: EMOTE.BACK }],
     ],
@@ -567,6 +595,16 @@ bot.on('message', async (msg) => {
     return bot.sendMessage(chatId, '❌ သင်သည် Bot အသုံးပြုခွင့် ပိတ်ပင်ခံထားရပါသည်။');
   }
 
+  // Check if user is in a deposit flow
+  const depositState = userDepositState.get(userId);
+  if (depositState) {
+    // အခြား menu button တွေနှိပ်ရင် စာသားမပို့ဘဲ screenshot ပဲ တောင်းမယ်
+    const isMenuButton = ['Products', 'My Orders', 'Account', 'Balance', 'Join Channel', 'Language', 'Redeem Code'].includes(text);
+    if (isMenuButton) {
+      return bot.sendMessage(chatId, '📸 ငွေလွှဲ Screenshot (ပုံ) ကို ပို့ပေးပါ။ (သို့မဟုတ် ❌Cancel❌ ကိုနှိပ်ပါ)');
+    }
+  }
+
   // Admin Command Handlers
   if (userId === ADMIN_ID) {
     if (text.startsWith('/addmoney ')) {
@@ -605,6 +643,11 @@ bot.on('message', async (msg) => {
       const url = text.split(' ')[1];
       await Config.updateOne({ key: 'channel_link' }, { value: url }, { upsert: true });
       return bot.sendMessage(chatId, `✅ Channel link ကို ${url} သို့ ပြောင်းလိုက်ပါပြီ။`);
+    }
+    if (text.startsWith('/setdisclaimer ')) {
+      const url = text.split(' ')[1];
+      await Config.updateOne({ key: 'disclaimer_link' }, { value: url }, { upsert: true });
+      return bot.sendMessage(chatId, `✅ Disclaimer link ကို ${url} သို့ ပြောင်းလိုက်ပါပြီ။`);
     }
     if (text.startsWith('/editkbz ')) {
       const [, num, name] = text.split(' ');
@@ -850,7 +893,8 @@ bot.onText(/^\/admin$/, async (msg) => {
     `⚙️ <b>Settings</b>\n` +
     `• <code>/setchannel [url]</code> - Channel Link ပြောင်းရန်\n` +
     `• <code>/editkbz [number] [name]</code> - KBZ Pay ပြင်ရန်\n` +
-    `• <code>/editwave [number] [name]</code> - Wave Pay ပြင်ရန်\n\n` +
+    `• <code>/editwave [number] [name]</code> - Wave Pay ပြင်ရန်\n` +
+    `• <code>/setdisclaimer [link]</code> - Disclaimer Link ပြင်ရန်\n\n` +
     `🎁 <b>Redeem Code</b>\n` +
     `• <code>/redeemgen [code] [amount] [maxUses]</code> - Code ထုတ်ရန်\n` +
     `<i>Example: /redeemgen 100ks 100 10</i>\n\n` +
@@ -866,7 +910,8 @@ bot.onText(/^\/admin$/, async (msg) => {
     `• <code>/girlcomment</code> - Girl Account အသစ်ထည့်ရန်\n` +
     `• <code>/checkphonenumber [number]</code> - Account အခြေအနေစစ်ရန်\n` +
     `• <code>/on</code> - Admin Noti ဖွင့်ရန်\n` +
-    `• <code>/off</code> - Admin Noti ပိတ်ရန်`;
+    `• <code>/off</code> - Admin Noti ပိတ်ရန်\n` +
+    `• <code>/setdisclaimer [link]</code> - Disclaimer Link ပြင်ရန်`;
 
   await bot.sendMessage(msg.chat.id, adminHelp, { parse_mode: 'HTML' });
 });
@@ -1000,7 +1045,7 @@ bot.on('callback_query', async (query) => {
         await bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML', reply_markup: keyboard });
         return;
       }
-      const { text, keyboard } = buildPrePurchaseCard(phoneDoc, country, serviceKey, Number(pageStr));
+      const { text, keyboard } = await buildPrePurchaseCard(phoneDoc, country, serviceKey, Number(pageStr));
       await bot.editMessageText(text, {
         chat_id: chatId,
         message_id: messageId,
@@ -1282,6 +1327,23 @@ bot.on('callback_query', async (query) => {
       }
       await bot.answerCallbackQuery(query.id);
       return;
+    } else if (data === 'back_to_services') {
+      await bot.editMessageText('🖤 <b>Select a product:</b>', {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: serviceSelectKeyboard(),
+      });
+      await bot.answerCallbackQuery(query.id);
+      return;
+    } else if (data === 'canceldeposit') {
+      userDepositState.delete(query.from.id);
+      await bot.answerCallbackQuery(query.id, { text: '❌ ငွေဖြည့်ခြင်းကို ပယ်ဖျက်လိုက်ပါပြီ။' });
+      await bot.editMessageText('❌ ငွေဖြည့်ခြင်းကို ပယ်ဖျက်လိုက်ပါပြီ။ Main Menu ခလုတ်များကို ပြန်လည်အသုံးပြုနိုင်ပါသည်။', {
+        chat_id: chatId,
+        message_id: messageId
+      });
+      return;
     } else if (data === 'noop') {
       await bot.answerCallbackQuery(query.id);
       return;
@@ -1445,12 +1507,15 @@ async function paymentInfoText(method) {
       : `<tg-emoji emoji-id="${EMOTE.WAVE_ICON}">🆗</tg-emoji>WAVE Pay - ${wave.number}`;
   const name = method === 'kbz' ? kbz.name : wave.name;
 
-  return (
-    `<tg-emoji emoji-id="${EMOTE.MIN_AMOUNT}">🔥</tg-emoji>အနည်းဆုံး 1500 ကျပ်မှစဖြည့်ပါ\n\n` +
-    `${line}\n` +
-    `<tg-emoji emoji-id="${EMOTE.WELCOME}">🍬</tg-emoji>name - ${name}\n\n` +
-    `ဆီသို့ ငွေလွဲပြီး screenshot ပို့ပေးပါ<tg-emoji emoji-id="${EMOTE.PARTY}">🤩</tg-emoji>`
-  );
+  return {
+    text: `<tg-emoji emoji-id="${EMOTE.MIN_AMOUNT}">🔥</tg-emoji>အနည်းဆုံး 1500 ကျပ်မှစဖြည့်ပါ\n\n` +
+          `${line}\n` +
+          `<tg-emoji emoji-id="${EMOTE.WELCOME}">🍬</tg-emoji>name - ${name}\n\n` +
+          `ဆီသို့ ငွေလွဲပြီး screenshot ပို့ပေးပါ<tg-emoji emoji-id="${EMOTE.PARTY}">🤩</tg-emoji>`,
+    reply_markup: {
+      inline_keyboard: [[{ text: '❌Cancel❌', callback_data: 'canceldeposit' }]]
+    }
+  };
 }
 
 bot.onText(/^ငွေဖြည့်ရန်$/, async (msg) => {
