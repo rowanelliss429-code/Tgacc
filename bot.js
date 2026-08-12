@@ -10,6 +10,9 @@ const crypto = require('crypto');
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
+const { TelegramClient } = require("telegram");
+const { StringSession } = require("telegram/sessions");
+const { Api } = require("telegram/tl");
 
 // ---------- ENV ----------
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -81,12 +84,20 @@ const EMOTE = {
   OUT_OF_STOCK_1: '5226700140936451703', // ‼️
   OUT_OF_STOCK_2: '6260460969076465267', // ➡️
   OUT_OF_STOCK_3: '6257789602497572109', // ⬅️
+  COMMENT_QTY: '6115968287735026787',    // 🥰
+  DONE_ICON: '6257974552379270658',      // 📱
+  POST_LINK_ICON: '6260487164082005216', // 📢
 };
 
 // ---- Products / Countries data (placeholder - DB ချိတ်ပြီးမှ dynamic လုပ်နိုင်) ----
 const SERVICES = {
   telegram: { label: 'Buy Telegram Accounts', emoteId: EMOTE.SVC_TELEGRAM },
   telegramm: { label: 'Buy Telegram Comments', emoteId: EMOTE.SVC_TELEGRAMM },
+};
+
+const COMMENT_CATEGORIES = {
+  boy: { label: 'Custom Boy Comment . 50ks', price: 50, emoteId: EMOTE.ACCOUNT },
+  girl: { label: 'Custom Girl Comment . 70ks', price: 70, emoteId: EMOTE.ACCOUNT },
 };
 
 const COUNTRIES = [
@@ -145,6 +156,29 @@ const configSchema = new mongoose.Schema({
 });
 const Config = mongoose.model('Config', configSchema);
 
+const commentAccountSchema = new mongoose.Schema({
+  phoneNumber: { type: String, required: true, unique: true },
+  sessionText: { type: String, required: true },
+  gender: { type: String, enum: ['boy', 'girl'], required: true },
+  status: { type: String, default: 'active' }, // active | frozen
+  createdAt: { type: Date, default: Date.now },
+});
+const CommentAccount = mongoose.model('CommentAccount', commentAccountSchema);
+
+const commentOrderSchema = new mongoose.Schema({
+  orderId: String,
+  userId: Number,
+  type: String, // boy | girl
+  quantity: Number,
+  postLink: String,
+  comments: [String],
+  status: { type: String, default: 'processing' }, // processing | completed | failed
+  processedCount: { type: Number, default: 0 },
+  logs: [String],
+  createdAt: { type: Date, default: Date.now },
+});
+const CommentOrder = mongoose.model('CommentOrder', commentOrderSchema);
+
 // ---- Phone Number (account inventory) schema ----
 const phoneNumberSchema = new mongoose.Schema({
   number: { type: String, required: true }, // e.g. +95xxxxxxxxx
@@ -202,6 +236,77 @@ function fmtKs(n) {
   return `${Number(n || 0).toLocaleString('en-US')} Ks`;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(ms, resolve));
+}
+
+async function processCommentOrder(orderId) {
+  const order = await CommentOrder.findOne({ orderId });
+  if (!order) return;
+
+  const accounts = await CommentAccount.find({ gender: order.type, status: 'active' }).limit(order.quantity);
+  const isNotiOn = (await Config.findOne({ key: 'admin_noti' }))?.value;
+
+  const delays = [2 * 60 * 1000, 1 * 60 * 1000, 30 * 1000]; // 2m, 1m, 30s
+  let delayIdx = 0;
+
+  for (let i = 0; i < order.quantity; i++) {
+    const acc = accounts[i];
+    const commentText = order.comments[i];
+    
+    // Wait for the specific delay
+    await new Promise(r => setTimeout(r, delays[delayIdx]));
+    delayIdx = (delayIdx + 1) % delays.length;
+
+    try {
+      const client = new TelegramClient(new StringSession(acc.sessionText), API_ID, API_HASH, { connectionRetries: 3 });
+      await client.connect();
+
+      // Join Channel
+      const target = order.postLink.split('/').slice(-2, -1)[0];
+      await client.invoke(new Api.channels.JoinChannel({ channel: target })).catch(() => {});
+      
+      // Wait 5s after join
+      await new Promise(r => setTimeout(r, 5000));
+
+      // Post Comment
+      const postMsgId = parseInt(order.postLink.split('/').pop());
+      await client.sendMessage(target, {
+        message: commentText,
+        replyTo: postMsgId,
+      });
+
+      await client.disconnect();
+
+      order.processedCount += 1;
+      order.logs.push(`✅ [${acc.phoneNumber}] Success: ${commentText}`);
+      await order.save();
+
+      if (isNotiOn) {
+        await bot.sendMessage(ADMIN_ID, `📝 <b>Comment Progress (#${orderId})</b>\nAcc: ${acc.phoneNumber}\nMsg: ${commentText}\nStatus: Success`, { parse_mode: 'HTML' });
+      }
+    } catch (err) {
+      order.logs.push(`❌ [${acc.phoneNumber}] Fail: ${err.message}`);
+      await order.save();
+      
+      if (isNotiOn) {
+        await bot.sendMessage(ADMIN_ID, `⚠️ <b>Comment Fail (#${orderId})</b>\nAcc: ${acc.phoneNumber}\nMsg: ${commentText}\nError: ${err.message}\nLink: ${order.postLink}`, { parse_mode: 'HTML' });
+      }
+    }
+  }
+
+  order.status = 'completed';
+  await order.save();
+
+  // Notify User
+  await bot.sendMessage(
+    order.userId,
+    `<tg-emoji emoji-id="${EMOTE.DONE_ICON}">📱</tg-emoji><b>Done Comments</b>\n` +
+    `<tg-emoji emoji-id="${EMOTE.POST_LINK_ICON}">📢</tg-emoji>Post Link - ${order.postLink}`,
+    { parse_mode: 'HTML' }
+  );
+}
+
 // ---------- KEYBOARD (matches the reference screenshot layout,
 // cascaded one step as requested) ----------
 function mainMenuKeyboard() {
@@ -239,6 +344,15 @@ function serviceSelectKeyboard() {
     inline_keyboard: [
       [{ text: SERVICES.telegram.label, callback_data: 'svc:telegram', icon_custom_emoji_id: SERVICES.telegram.emoteId }],
       [{ text: SERVICES.telegramm.label, callback_data: 'svc:telegramm', icon_custom_emoji_id: SERVICES.telegramm.emoteId }],
+    ],
+  };
+}
+
+function commentCategoryKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: COMMENT_CATEGORIES.boy.label, callback_data: 'cmcat:boy' }],
+      [{ text: COMMENT_CATEGORIES.girl.label, callback_data: 'cmcat:girl' }],
     ],
   };
 }
@@ -361,6 +475,11 @@ const ADMIN_COMMANDS = [
   '/stats',
   '/broadcast',
   '/addnumber',
+  '/boycomment',
+  '/girlcomment',
+  '/checkphonenumber',
+  '/on',
+  '/off',
 ];
 
 function isAdminCommand(text) {
@@ -472,12 +591,177 @@ bot.on('message', async (msg) => {
       if (col === 'user') await User.deleteOne({ telegramId: Number(id) });
       if (col === 'phone') await PhoneNumber.deleteOne({ _id: id });
       if (col === 'redeem') await RedeemCode.deleteOne({ code: id });
+      if (col === 'comment') await CommentAccount.deleteOne({ phoneNumber: id });
       return bot.sendMessage(chatId, `✅ Deleted from ${col}.`);
+    }
+    if (text === '/boycomment') {
+      adminState.set(userId, { step: 'awaiting_comment_phone', gender: 'boy' });
+      return bot.sendMessage(chatId, '👦 <b>Boy Comment Account</b> အတွက် ဖုန်းနံပါတ် ပို့ပေးပါ...', { parse_mode: 'HTML' });
+    }
+    if (text === '/girlcomment') {
+      adminState.set(userId, { step: 'awaiting_comment_phone', gender: 'girl' });
+      return bot.sendMessage(chatId, '👧 <b>Girl Comment Account</b> အတွက် ဖုန်းနံပါတ် ပို့ပေးပါ...', { parse_mode: 'HTML' });
+    }
+    if (text.startsWith('/checkphonenumber ')) {
+      const phone = text.split(' ')[1];
+      const acc = await CommentAccount.findOne({ phoneNumber: phone });
+      if (!acc) return bot.sendMessage(chatId, '❌ ဤဖုန်းနံပါတ်ဖြင့် အကောင့်မရှိပါ။');
+      
+      try {
+        const client = new TelegramClient(new StringSession(acc.sessionText), API_ID, API_HASH, { connectionRetries: 3 });
+        await client.connect();
+        const isAuth = await client.isUserAuthorized();
+        await client.disconnect();
+        return bot.sendMessage(chatId, `📱 <b>Account Status: ${phone}</b>\nAuthorized: ${isAuth ? '✅ Yes' : '❌ No'}\nStatus: ${acc.status}`, { parse_mode: 'HTML' });
+      } catch (e) {
+        return bot.sendMessage(chatId, `❌ Error checking account: ${e.message}`);
+      }
+    }
+    if (text === '/on') {
+      await Config.updateOne({ key: 'admin_noti' }, { value: true }, { upsert: true });
+      return bot.sendMessage(chatId, '✅ Admin Notification ဖွင့်လိုက်ပါပြီ။');
+    }
+    if (text === '/off') {
+      await Config.updateOne({ key: 'admin_noti' }, { value: false }, { upsert: true });
+      return bot.sendMessage(chatId, '❌ Admin Notification ပိတ်လိုက်ပါပြီ။');
+    }
+  }
+
+  // Admin multi-step flows for comment accounts
+  if (userId === ADMIN_ID) {
+    const state = adminState.get(userId);
+    if (state && state.step === 'awaiting_comment_phone') {
+      adminState.set(userId, { ...state, step: 'awaiting_comment_session', phoneNumber: text.trim() });
+      return bot.sendMessage(chatId, `✅ ဖုန်းနံပါတ် <code>${text.trim()}</code> အတွက် Session String (Token) ကို ပို့ပေးပါ...`, { parse_mode: 'HTML' });
+    }
+    if (state && state.step === 'awaiting_comment_session') {
+      const sessionStr = text.trim();
+      try {
+        // Validate session string
+        const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, { connectionRetries: 1 });
+        await client.connect();
+        const isAuth = await client.isUserAuthorized();
+        await client.disconnect();
+        
+        if (!isAuth) return bot.sendMessage(chatId, '❌ Session string မမှန်ကန်ပါ သို့မဟုတ် Unauthorized ဖြစ်နေပါသည်။');
+        
+        await CommentAccount.updateOne(
+          { phoneNumber: state.phoneNumber },
+          { sessionText: sessionStr, gender: state.gender, status: 'active' },
+          { upsert: true }
+        );
+        adminState.delete(userId);
+        return bot.sendMessage(chatId, `✅ ${state.gender === 'boy' ? '👦 Boy' : '👧 Girl'} Account <code>${state.phoneNumber}</code> ကို အောင်မြင်စွာ သိမ်းဆည်းပြီးပါပြီ။`, { parse_mode: 'HTML' });
+      } catch (e) {
+        return bot.sendMessage(chatId, `❌ Error validating session: ${e.message}`);
+      }
+    }
+  }
+
+  // User Comment Multi-step Flow
+  const state = adminState.get(userId);
+  if (state) {
+    if (state.step === 'awaiting_comment_qty') {
+      const qtyStr = text.trim();
+      if (!/^\d+$/.test(qtyStr)) return bot.sendMessage(chatId, '❌ Send only English number.');
+      
+      const qty = parseInt(qtyStr);
+      if (qty < 1) return bot.sendMessage(chatId, '❌ Enter Minimum 1.');
+      if (qty > state.stockCount) return bot.sendMessage(chatId, `❌ Maximum ${state.stockCount}.`);
+
+      adminState.set(userId, { ...state, step: 'awaiting_comment_link', quantity: qty });
+      return bot.sendMessage(chatId, '🔗 <b>Comment ထည့်မည့် Channel Post Link ပို့ပေးပါ...</b>\n(ဥပမာ - https://t.me/kayzinhnin/8573)', { parse_mode: 'HTML' });
+    }
+
+    if (state.step === 'awaiting_comment_link') {
+      const link = text.trim();
+      const channelPostRegex = /https:\/\/t\.me\/[a-zA-Z0-9_]+\/\d+/;
+      const personalRegex = /https:\/\/t\.me\/[a-zA-Z0-9_]+$/;
+
+      if (personalRegex.test(link) && !channelPostRegex.test(link)) {
+        return bot.sendMessage(chatId, '❌ Channel Link သာ ပို့ပေးပါ (Personal account link မရပါ)။');
+      }
+      if (!channelPostRegex.test(link)) {
+        return bot.sendMessage(chatId, '❌ Link ပုံစံ မှားယွင်းနေပါသည်။ Link အမှန် ပြန်ပို့ပေးပါ။');
+      }
+
+      adminState.set(userId, { ...state, step: 'awaiting_comment_texts', postLink: link });
+      const helpMsg = 
+        `✍️ <b>Custom Comment များ ပို့ပေးပါ</b>\n\n` +
+        `အရေအတွက် <b>${state.quantity}</b> ခုအတွက် အောက်ပါအတိုင်း နံပါတ်စဉ်တပ်ပြီး ပို့ပေးပါ -\n` +
+        `1. Hello\n` +
+        `2. Test\n\n` +
+        `<i>(Bot မှ နံပါတ်စဉ်များကို ဖယ်ရှားပြီး စာသားကိုသာ မန့်ပေးမည်ဖြစ်သည်)</i>`;
+      return bot.sendMessage(chatId, helpMsg, { parse_mode: 'HTML' });
+    }
+
+    if (state.step === 'awaiting_comment_texts') {
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l !== '');
+      const parsedComments = lines.map(line => {
+        // Remove leading number and dot (e.g., "1. ", "1.1. ", "1)")
+        return line.replace(/^\d+[\.\)]\s*/, '').trim();
+      }).filter(c => c !== '');
+
+      if (parsedComments.length < state.quantity) {
+        return bot.sendMessage(chatId, `❌ Comment အရေအတွက် မပြည့်စုံပါ။ <b>${state.quantity}</b> ခု ပြည့်အောင် ပို့ပေးပါ။`, { parse_mode: 'HTML' });
+      }
+
+      // Finalize Order
+      const finalComments = parsedComments.slice(0, state.quantity);
+      const pricePerCm = COMMENT_CATEGORIES[state.gender].price;
+      const totalPrice = pricePerCm * state.quantity;
+
+      const userDoc = await getOrCreateUser(msg.from);
+      if (userDoc.balance < totalPrice) {
+        adminState.delete(userId);
+        return bot.sendMessage(chatId, `❌ Balance မလုံလောက်ပါ။ လိုအပ်သည်: ${fmtKs(totalPrice)}, လက်ရှိ: ${fmtKs(userDoc.balance)}`);
+      }
+
+      // Deduct balance and create order
+      userDoc.balance -= totalPrice;
+      const orderId = crypto.randomBytes(4).toString('hex');
+      userDoc.orders.push({
+        orderId: orderId,
+        productName: `${state.gender === 'boy' ? '👦 Boy' : '👧 Girl'} Comment (${state.quantity} units)`,
+        amount: totalPrice,
+        status: 'processing',
+        createdAt: new Date()
+      });
+      await userDoc.save();
+
+      await CommentOrder.create({
+        orderId,
+        userId,
+        type: state.gender,
+        quantity: state.quantity,
+        postLink: state.postLink,
+        comments: finalComments,
+      });
+
+      adminState.delete(userId);
+      await bot.sendMessage(chatId, `✅ <b>Order တင်ခြင်း အောင်မြင်ပါသည်!</b>\nComment များကို စတင်မန့်ပေးနေပါပြီ။ ပြီးစီးပါက အကြောင်းကြားပေးပါမည်။`, { parse_mode: 'HTML' });
+      
+      // Notify Admin if enabled
+      const isNotiOn = (await Config.findOne({ key: 'admin_noti' }))?.value;
+      if (isNotiOn) {
+        const adminMsg = 
+          `🔔 <b>New Comment Order</b>\n` +
+          `Order ID: <code>#${orderId}</code>\n` +
+          `User: @${msg.from.username || '-'}\n` +
+          `Type: ${state.gender}\n` +
+          `Qty: ${state.quantity}\n` +
+          `Link: ${state.postLink}\n` +
+          `Comments:\n<code>${finalComments.join('\n')}</code>`;
+        await bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: 'HTML' });
+      }
+
+      // Start processing (this will be handled by a separate background function)
+      processCommentOrder(orderId);
+      return;
     }
   }
 
   // Redeem Code Step
-  const state = adminState.get(userId);
   if (state && state.step === 'awaiting_redeem_code') {
     const codeStr = text.trim();
     const redeem = await RedeemCode.findOne({ code: codeStr });
@@ -523,7 +807,13 @@ bot.onText(/^\/admin$/, async (msg) => {
     `<i>Collections: user, phone, redeem</i>\n\n` +
     `📢 <b>Other</b>\n` +
     `• <code>/broadcast [message]</code> - User အားလုံးဆီ စာပို့ရန်\n` +
-    `• <code>/addnumber</code> - Number အသစ်ထည့်ရန်`;
+    `• <code>/addnumber</code> - Number အသစ်ထည့်ရန်\n\n` +
+    `💬 <b>Comment System</b>\n` +
+    `• <code>/boycomment</code> - Boy Account အသစ်ထည့်ရန်\n` +
+    `• <code>/girlcomment</code> - Girl Account အသစ်ထည့်ရန်\n` +
+    `• <code>/checkphonenumber [number]</code> - Account အခြေအနေစစ်ရန်\n` +
+    `• <code>/on</code> - Admin Noti ဖွင့်ရန်\n` +
+    `• <code>/off</code> - Admin Noti ပိတ်ရန်`;
 
   await bot.sendMessage(msg.chat.id, adminHelp, { parse_mode: 'HTML' });
 });
@@ -597,10 +887,28 @@ bot.on('callback_query', async (query) => {
     } else if (data.startsWith('svc:')) {
       // Step 1 -> Step 2: service ရွေးပြီးရင် country/flag buttons အဖြစ်ပြောင်း
       const serviceKey = data.split(':')[1];
-      await bot.editMessageReplyMarkup(countrySelectKeyboard(serviceKey), {
-        chat_id: chatId,
-        message_id: messageId,
-      });
+      if (serviceKey === 'telegramm') {
+        await bot.editMessageReplyMarkup(commentCategoryKeyboard(), {
+          chat_id: chatId,
+          message_id: messageId,
+        });
+      } else {
+        await bot.editMessageReplyMarkup(countrySelectKeyboard(serviceKey), {
+          chat_id: chatId,
+          message_id: messageId,
+        });
+      }
+    } else if (data.startsWith('cmcat:')) {
+      const gender = data.split(':')[1];
+      const stockCount = await CommentAccount.countDocuments({ gender, status: 'active' });
+      
+      if (stockCount === 0) {
+        return bot.answerCallbackQuery(query.id, { text: '❌ လက်ရှိတွင် အကောင့်များ ပြတ်လပ်နေပါသည်။', show_alert: true });
+      }
+
+      adminState.set(query.from.id, { step: 'awaiting_comment_qty', gender, stockCount });
+      await bot.sendMessage(chatId, `<tg-emoji emoji-id="${EMOTE.COMMENT_QTY}">🥰</tg-emoji>မန့်မည့် Comment အရေအတွက် ပို့ပေးပါ... (Maximum: ${stockCount})`, { parse_mode: 'HTML' });
+      await bot.answerCallbackQuery(query.id);
     } else if (data.startsWith('country:')) {
       // Step 2 -> Step 3: country ရွေးပြီးရင် product card + number list (page 1) ပြ
       const [, serviceKey, countryCode] = data.split(':');
@@ -903,20 +1211,20 @@ bot.on('callback_query', async (query) => {
       } else {
         const totalPages = Math.max(1, Math.ceil(user.orders.length / ORDERS_PER_PAGE));
         const page = Math.min(Math.max(1, targetPage), totalPages);
+        
+        const keyboard = { inline_keyboard: [] };
+        if (totalPages > 1) {
+          const navRow = [];
+          if (page > 1) navRow.push({ text: '⬅️ Back', callback_data: `orders:page:${page - 1}` });
+          if (page < totalPages) navRow.push({ text: 'Next ➡️', callback_data: `orders:page:${page + 1}` });
+          if (navRow.length) keyboard.inline_keyboard.push(navRow);
+        }
+
         await bot.editMessageText(ordersPageText(user, page, totalPages), {
           chat_id: chatId,
           message_id: messageId,
           parse_mode: 'HTML',
-          reply_markup: totalPages > 1
-            ? {
-                inline_keyboard: [
-                  [
-                    ...(page > 1 ? [{ text: '⬅️ Back', callback_data: `orders:page:${page - 1}` }] : []),
-                    ...(page < totalPages ? [{ text: 'Next ➡️', callback_data: `orders:page:${page + 1}` }] : []),
-                  ],
-                ],
-              }
-            : { inline_keyboard: [] },
+          reply_markup: keyboard,
         });
       }
       await bot.answerCallbackQuery(query.id);
@@ -938,17 +1246,25 @@ bot.on('callback_query', async (query) => {
 const ORDERS_PER_PAGE = 10;
 
 function ordersPageText(user, page, totalPages) {
-  const pageOrders = user.orders.slice(
+  // Sort orders by date (newest first) for better UX
+  const sortedOrders = [...user.orders].sort((a, b) => b.createdAt - a.createdAt);
+  const pageOrders = sortedOrders.slice(
     (page - 1) * ORDERS_PER_PAGE,
     page * ORDERS_PER_PAGE
   );
   const globalIdx = (page - 1) * ORDERS_PER_PAGE;
   const list = pageOrders
-    .map(
-      (o, i) =>
-        `${globalIdx + i + 1}. ${o.productName} - ${fmtKs(o.amount)} [${o.status}]`
-    )
+    .map((o, i) => {
+      let displayTitle = o.productName;
+      // ပြောင်းလဲရန်တောင်းဆိုထားသည့်အတိုင်း Title များကို ညှိပေးခြင်း
+      if (displayTitle.includes('Myanmar')) displayTitle = '🇲🇲+95 Myanmar Account';
+      else if (displayTitle.includes('UnitedState')) displayTitle = '🇺🇸+1 UnitedState Account';
+      else if (displayTitle.includes('Colombia')) displayTitle = '🇨🇴+57 Colombia Account';
+      
+      return `${globalIdx + i + 1}. ${displayTitle} - ${fmtKs(o.amount)} [${o.status}]`;
+    })
     .join('\n');
+    
   return (
     `<tg-emoji emoji-id="${EMOTE.MY_ORDERS}">📦</tg-emoji><b>My Orders</b>\n` +
     `━━━━━━━━━━━━━━━━\n` +
