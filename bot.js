@@ -265,56 +265,56 @@ async function processCommentOrder(orderId) {
       await client.connect();
 
       const channelName = order.postLink.split('/').slice(-2, -1)[0];
-      const postMsgId = parseInt(order.postLink.split('/').pop());
+      const postMsgId = parseInt(order.postLink.split('/').pop().split('?')[0]);
 
-      // Step 1: Get the discussion chat for the channel post
+      // Step 1: Get the discussion chat and the correct message ID to reply to
       let targetChat = channelName;
       let replyToMsgId = postMsgId;
 
       try {
-        const fullChannel = await client.invoke(new Api.channels.GetFullChannel({ channel: channelName }));
-        if (fullChannel.fullChat.linkedChatId) {
-          // It has a linked discussion group
-          const linkedChat = await client.getEntity(fullChannel.fullChat.linkedChatId);
-          targetChat = linkedChat;
+        // Use GetDiscussionMessage to find the linked chat and the forwarded message ID
+        const discussion = await client.invoke(new Api.messages.GetDiscussionMessage({
+          peer: channelName,
+          msgId: postMsgId
+        }));
+
+        if (discussion && discussion.messages && discussion.messages.length > 0) {
+          // The first message in discussion.messages is the forwarded post in the group
+          const discMsg = discussion.messages[0];
+          replyToMsgId = discMsg.id;
           
-          // In discussion groups, we need to reply to the forwarded message from the channel
-          // The message ID in the group is usually different, so we search for it
-          const messages = await client.invoke(new Api.messages.GetHistory({
-            peer: linkedChat,
-            limit: 50
-          }));
-          
-          const discussionMsg = messages.messages.find(m => 
-            m.fwdFrom && m.fwdFrom.fromId && 
-            m.fwdFrom.fromId.channelId && 
-            m.fwdFrom.savedFromMsgId === postMsgId
-          );
-          
-          if (discussionMsg) {
-            replyToMsgId = discussionMsg.id;
+          // The linked chat (group) is in discussion.chats
+          const linkedChat = discussion.chats.find(c => c.id.toString() === discMsg.peerId.channelId.toString());
+          if (linkedChat) {
+            targetChat = linkedChat;
           }
         }
       } catch (e) {
-        console.log("Discussion detection failed, falling back to direct post:", e.message);
+        console.log("GetDiscussionMessage failed, trying fallback:", e.message);
+        // Fallback: Try GetFullChannel to at least find the linked chat ID
+        try {
+          const fullChannel = await client.invoke(new Api.channels.GetFullChannel({ channel: channelName }));
+          if (fullChannel.fullChat.linkedChatId) {
+            targetChat = await client.getEntity(fullChannel.fullChat.linkedChatId);
+          }
+        } catch (innerE) {
+          console.log("Fallback detection also failed:", innerE.message);
+        }
       }
 
       // Step 2: Join and Post
+      // We always try to join first if it's a group we might not be in
       try {
-        await client.sendMessage(targetChat, {
-          message: commentText,
-          replyTo: replyToMsgId,
-        });
-      } catch (postErr) {
-        // If post fails, join the chat first
         await client.invoke(new Api.channels.JoinChannel({ channel: targetChat })).catch(() => {});
-        await new Promise(r => setTimeout(r, 5000)); // Wait 5s after join
-        
-        await client.sendMessage(targetChat, {
-          message: commentText,
-          replyTo: replyToMsgId,
-        });
-      }
+      } catch (e) {}
+
+      // Wait a bit after join attempt
+      await new Promise(r => setTimeout(r, 3000));
+
+      await client.sendMessage(targetChat, {
+        message: commentText,
+        replyTo: replyToMsgId,
+      });
 
       await client.disconnect();
 
