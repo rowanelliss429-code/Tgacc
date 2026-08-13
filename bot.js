@@ -223,15 +223,20 @@ const DepositRequest = mongoose.model('DepositRequest', depositRequestSchema);
 
 // ---------- HELPERS ----------
 async function getOrCreateUser(from) {
-  let user = await User.findOne({ telegramId: from.id });
-  if (!user) {
-    user = await User.create({
-      telegramId: from.id,
-      username: from.username || '',
-      firstName: from.first_name || '',
-    });
-  }
-  return user;
+  return await User.findOneAndUpdate(
+    { telegramId: from.id },
+    {
+      $setOnInsert: {
+        telegramId: from.id,
+        createdAt: new Date(),
+      },
+      $set: {
+        username: from.username || '',
+        firstName: from.first_name || '',
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
 }
 
 function fmtKs(n) {
@@ -1980,18 +1985,29 @@ setInterval(async () => {
 }, 15 * 1000); // Every 15 seconds
 
 // ---------- SELF-PING TO KEEP AWAKE ----------
-// Render free tier sleeps after 15m of inactivity. 
+// Render free tier sleeps after 15m of inactivity.
 // This pings the bot's own URL every 5 minutes to stay awake.
-setInterval(() => {
+// NOTE: Make sure to set RENDER_EXTERNAL_URL in Render Dashboard Environment Variables.
+const selfPing = () => {
   const url = process.env.RENDER_EXTERNAL_URL;
-  if (url) {
-    const lib = url.startsWith('https') ? require('https') : require('http');
-    lib.get(url, (res) => {
-      console.log(`Self-ping to ${url} successful: ${res.statusCode}`);
-    }).on('error', (err) => {
-      console.error('Self-ping failed:', err.message);
-    });
+  if (!url) {
+    console.warn('⚠️ RENDER_EXTERNAL_URL is not set. Self-ping skipped. Bot might sleep!');
+    return;
   }
-}, 5 * 60 * 1000); // Every 5 minutes
+  
+  const lib = url.startsWith('https') ? require('https') : require('http');
+  lib.get(url, (res) => {
+    console.log(`[${new Date().toISOString()}] Self-ping to ${url} - Status: ${res.statusCode}`);
+  }).on('error', (err) => {
+    console.error(`[${new Date().toISOString()}] Self-ping failed:`, err.message);
+  });
+};
+
+// Ping immediately on start and then every 5 minutes
+selfPing();
+setInterval(selfPing, 5 * 60 * 1000);
+
+// Additional /ping endpoint for external uptime monitors
+app.get('/ping', (req, res) => res.status(200).send('pong'));
 
 console.log('🤖 Bot started (polling mode)...');
