@@ -982,8 +982,13 @@ bot.on('callback_query', async (query) => {
     } else if (data.startsWith('deposit:')) {
       // KBZ Pay / Wave Pay ရွေးလိုက်ရင် - account info ပြပြီး screenshot တောင်း
       const method = data.split(':')[1]; // kbz | wave
-      const text = await paymentInfoText(method);
-      await bot.editMessageText(text, { chat_id: chatId, message_id: messageId, parse_mode: 'HTML' });
+      const info = await paymentInfoText(method);
+      await bot.editMessageText(info.text, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'HTML',
+        reply_markup: info.reply_markup
+      });
       userDepositState.set(query.from.id, { step: 'awaiting_screenshot', method });
       await bot.answerCallbackQuery(query.id);
       return;
